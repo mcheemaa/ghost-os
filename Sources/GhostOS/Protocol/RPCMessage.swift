@@ -83,6 +83,7 @@ public enum RPCResult: Codable, Sendable {
     case elements([ElementNode])
     case tree(ElementNode)
     case diff(StateDiff)
+    case content([ContentItem])
     case app(AppInfo)
     case message(String)
     case bool(Bool)
@@ -107,6 +108,9 @@ public enum RPCResult: Codable, Sendable {
         case let .diff(diff):
             try container.encode("diff", forKey: .type)
             try container.encode(diff, forKey: .data)
+        case let .content(items):
+            try container.encode("content", forKey: .type)
+            try container.encode(items, forKey: .data)
         case let .app(app):
             try container.encode("app", forKey: .type)
             try container.encode(app, forKey: .data)
@@ -131,6 +135,8 @@ public enum RPCResult: Codable, Sendable {
             self = .tree(try container.decode(ElementNode.self, forKey: .data))
         case "diff":
             self = .diff(try container.decode(StateDiff.self, forKey: .data))
+        case "content":
+            self = .content(try container.decode([ContentItem].self, forKey: .data))
         case "app":
             self = .app(try container.decode(AppInfo.self, forKey: .data))
         case "message":

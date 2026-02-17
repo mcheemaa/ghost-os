@@ -58,6 +58,10 @@ public final class RPCHandler {
             return handleScroll(params: params, id: id)
         case "focus":
             return handleFocus(params: params, id: id)
+        case "readContent":
+            return handleReadContent(params: params, id: id)
+        case "findDeep":
+            return handleFindDeep(params: params, id: id)
         case "getTree":
             return handleGetTree(params: params, id: id)
         case "getDiff":
@@ -191,6 +195,29 @@ public final class RPCHandler {
         } catch {
             return .failure(.notFound("\(error)"), id: id)
         }
+    }
+
+    private func handleReadContent(params: RPCParams?, id: Int) -> RPCResponse {
+        stateManager.refresh()
+        let items = stateManager.readContent(appName: params?.app, maxDepth: params?.depth ?? 20)
+        if items.isEmpty {
+            return .failure(.notFound("No readable content found"), id: id)
+        }
+        return .success(.content(items), id: id)
+    }
+
+    private func handleFindDeep(params: RPCParams?, id: Int) -> RPCResponse {
+        guard let query = params?.query ?? params?.target else {
+            return .failure(.invalidParams("'query' or 'target' required"), id: id)
+        }
+        stateManager.refresh()
+        let elements = stateManager.findElementsDeep(
+            query: query,
+            role: params?.role,
+            appName: params?.app,
+            maxDepth: params?.depth ?? 15
+        )
+        return .success(.elements(elements), id: id)
     }
 
     private func handleGetTree(params: RPCParams?, id: Int) -> RPCResponse {

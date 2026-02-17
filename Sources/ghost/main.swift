@@ -61,6 +61,8 @@ func main() async {
         await handleDiff(subArgs)
     case "watch":
         await handleWatch(subArgs)
+    case "read":
+        await handleRead(subArgs)
     case "describe":
         await handleDescribe(subArgs)
     case "permissions":
@@ -193,6 +195,7 @@ func handleFind(_ args: [String]) async {
     let limitStr = flagValue(args, flag: "--limit")
     let limit = limitStr.flatMap(Int.init) ?? 20
     let useSmart = args.contains("--smart")
+    let useDeep = args.contains("--deep")
 
     // Collect flag values so we can exclude them from the query
     let flagValues: Set<String> = Set(
@@ -201,7 +204,25 @@ func handleFind(_ args: [String]) async {
     let query = args.first(where: { !$0.hasPrefix("-") && !flagValues.contains($0) }) ?? ""
 
     guard !query.isEmpty || role != nil else {
-        print("Usage: ghost find <query> [--role button] [--app Chrome] [--smart] [--limit 20]")
+        print("Usage: ghost find <query> [--role button] [--app Chrome] [--smart] [--deep] [--limit 20]")
+        return
+    }
+
+    // Deep mode: skip menus, search from content root with depth 15
+    if useDeep {
+        let daemon = directDaemon()
+        let elements = daemon.findElementsDeep(query: query, role: role, app: appName)
+        if elements.isEmpty {
+            print("No elements found (deep search)")
+        } else {
+            print("Found \(elements.count) elements:")
+            for el in elements.prefix(limit) {
+                let label = el.label ?? el.id
+                let pos = el.position.map { " at (\(Int($0.x)),\(Int($0.y)))" } ?? ""
+                let val = el.value.map { " = \($0)" } ?? ""
+                print("  \(el.role) \"\(label)\"\(val)\(pos)")
+            }
+        }
         return
     }
 
@@ -505,6 +526,56 @@ func handleWatch(_ args: [String]) async {
 }
 
 @MainActor
+func handleRead(_ args: [String]) async {
+    let appName = flagValue(args, flag: "--app")
+    let depthStr = flagValue(args, flag: "--depth")
+    let maxDepth = depthStr.flatMap(Int.init) ?? 20
+    let useJSON = args.contains("--json")
+
+    // Try daemon first
+    if let response = trySendToDaemon(
+        method: "readContent",
+        params: RPCParams(app: appName, depth: maxDepth)
+    ) {
+        if !useJSON, case let .content(items) = response.result {
+            renderContent(items)
+        } else {
+            printJSON(response)
+        }
+        return
+    }
+
+    // Direct mode
+    let daemon = directDaemon()
+    let items = daemon.readContent(app: appName, maxDepth: maxDepth)
+    if items.isEmpty {
+        print("No readable content found")
+        return
+    }
+    if useJSON {
+        printJSON(items)
+    } else {
+        renderContent(items)
+    }
+}
+
+/// Render content items in a readable format
+func renderContent(_ items: [ContentItem]) {
+    var lastDepth = 0
+    for item in items {
+        let text = item.render()
+        if text.isEmpty { continue }
+
+        // Add blank line before headings for readability
+        if item.type == "heading" && lastDepth >= 0 {
+            print("")
+        }
+        print(text)
+        lastDepth = item.depth
+    }
+}
+
+@MainActor
 func handleDescribe(_ args: [String]) async {
     let appName = flagValue(args, flag: "--app")
     let depth = flagValue(args, flag: "--depth").flatMap(Int.init) ?? 3
@@ -606,6 +677,8 @@ func printResult(_ response: RPCResponse) {
         print(tree.renderTree())
     case .diff(let diff):
         print(diff.summary())
+    case .content(let items):
+        renderContent(items)
     case .app(let app):
         printJSON(app)
     }
@@ -629,6 +702,9 @@ func printUsage() {
       ghost find <query>          Find elements matching query
       ghost find --role <role>    Filter by role (button, textfield, etc.)
       ghost find --smart          Use fuzzy matching with confidence scores
+      ghost find --deep           Skip menus, search deep into content
+      ghost read                  Read text content from frontmost app
+      ghost read --app <name>     Read content from specific app
       ghost click <label>         Smart click — find best match and click it
       ghost click --at x,y        Click at exact coordinates
       ghost type <text>           Type text at current focus

@@ -130,6 +130,23 @@ extension ElementNode {
             }
         }
 
+        // For web content: text may only be in parameterized attributes
+        var resolvedLabel = label
+        if (resolvedLabel == nil || resolvedLabel!.isEmpty) && (valueStr == nil || valueStr!.isEmpty) {
+            if let range = element.visibleCharacterRange(), range.length > 0 {
+                let text = element.string(forRange: range)
+                if let t = text, !t.isEmpty {
+                    resolvedLabel = t.count > 200 ? String(t.prefix(200)) + "..." : t
+                }
+            } else if let numChars = element.numberOfCharacters(), numChars > 0 {
+                let fullRange = CFRange(location: 0, length: Int(numChars))
+                let text = element.string(forRange: fullRange)
+                if let t = text, !t.isEmpty {
+                    resolvedLabel = t.count > 200 ? String(t.prefix(200)) + "..." : t
+                }
+            }
+        }
+
         // Position and size
         let pos = element.position()
         let size = element.size()
@@ -144,7 +161,7 @@ extension ElementNode {
 
         // Stable-ish ID
         let id = element.identifier() ?? element.domIdentifier()
-            ?? "\(role):\(label ?? "?")"
+            ?? "\(role):\(resolvedLabel ?? "?")"
 
         // Children — use AXorcist's comprehensive children() method
         // which handles AXWindows, alternative attributes, and deduplication
@@ -170,7 +187,7 @@ extension ElementNode {
         return ElementNode(
             id: id,
             role: role,
-            label: label,
+            label: resolvedLabel,
             value: valueStr,
             roleDescription: roleDesc,
             position: pos != nil ? CGPointCodable(pos!) : nil,

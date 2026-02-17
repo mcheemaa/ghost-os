@@ -411,6 +411,207 @@ public final class StateManager {
         return StateDiff(timestamp: Date(), changes: changes)
     }
 
+    // MARK: - Deep Content Reading
+
+    /// Roles to skip when searching for content — menus are noise for content reading
+    private static let skipRoles: Set<String> = [
+        "AXMenuBar", "AXMenu", "AXMenuItem", "AXMenuBarItem",
+    ]
+
+    /// Roles that carry readable text content
+    private static let textRoles: Set<String> = [
+        "AXStaticText", "AXHeading", "AXLink", "AXTextField", "AXTextArea",
+        "AXButton", "AXCell", "AXImage", "AXRow", "AXCheckBox", "AXRadioButton",
+        "AXComboBox", "AXPopUpButton", "AXTable", "AXList", "AXGroup",
+    ]
+
+    /// Find the content root for an app — skips menus, finds web area or focused window.
+    /// This is the key insight: search from the CONTENT root, not the app root.
+    private func findContentRoot(pid: pid_t) -> Element? {
+        let axApp = AXUIElementCreateApplication(pid)
+        let appElement = Element(axApp)
+
+        // Strategy 1: Find AXWebArea (web apps like Gmail, Slack web, etc.)
+        if let webArea = findElementByRole(appElement, role: "AXWebArea", maxDepth: 8) {
+            return webArea
+        }
+
+        // Strategy 2: Find the focused window's content
+        if let focusedWindow = appElement.focusedWindow() {
+            return focusedWindow
+        }
+
+        // Strategy 3: Find the main window
+        if let windows = appElement.windows(), let mainWindow = windows.first {
+            return mainWindow
+        }
+
+        // Fallback: use the app element itself
+        return appElement
+    }
+
+    /// Walk the AX tree to find an element with a specific role
+    private func findElementByRole(_ element: Element, role: String, maxDepth: Int) -> Element? {
+        if maxDepth <= 0 { return nil }
+        if element.role() == role { return element }
+
+        guard let children = element.children() else { return nil }
+        for child in children.prefix(50) {
+            // Skip menus when searching for content
+            let childRole = child.role() ?? ""
+            if Self.skipRoles.contains(childRole) { continue }
+
+            if let found = findElementByRole(child, role: role, maxDepth: maxDepth - 1) {
+                return found
+            }
+        }
+        return nil
+    }
+
+    /// Read content from an app — extracts all readable text in document order.
+    /// Returns structured content items that an agent can understand.
+    public func readContent(appName: String? = nil, maxDepth: Int = 20) -> [ContentItem] {
+        let targetApp = appName ?? currentState.frontmostApp?.name
+        guard let app = targetApp else { return [] }
+        guard let appInfo = currentState.apps.first(where: {
+            $0.name.localizedCaseInsensitiveContains(app)
+        }) else { return [] }
+
+        guard let contentRoot = findContentRoot(pid: appInfo.pid) else { return [] }
+
+        var items: [ContentItem] = []
+        var visited = Set<UInt>()
+        extractContent(contentRoot, depth: 0, maxDepth: maxDepth, items: &items, visited: &visited)
+        return items
+    }
+
+    /// Recursively extract readable content from an element tree
+    private func extractContent(
+        _ element: Element,
+        depth: Int,
+        maxDepth: Int,
+        items: inout [ContentItem],
+        visited: inout Set<UInt>
+    ) {
+        if depth > maxDepth { return }
+
+        // Cycle detection
+        let hash = CFHash(element.underlyingElement)
+        guard !visited.contains(hash) else { return }
+        visited.insert(hash)
+
+        let role = element.role() ?? "Unknown"
+
+        // Skip menus entirely
+        if Self.skipRoles.contains(role) { return }
+
+        // Extract text from this element if it has content
+        let title = element.title()
+        let desc = element.descriptionText()
+        var value = element.value().flatMap { v -> String? in
+            let s = String(describing: v).trimmingCharacters(in: .whitespacesAndNewlines)
+            return s.isEmpty || s == "nil" ? nil : s
+        }
+
+        // For elements in web content (especially AXStaticText), text often lives in
+        // parameterized attributes. Chrome/Gmail return empty strings for title/desc/value
+        // but the actual text is accessible via visibleCharacterRange + stringForRange.
+        let titleEmpty = title == nil || title!.isEmpty
+        let descEmpty = desc == nil || desc!.isEmpty
+        let valueEmpty = value == nil || value!.isEmpty
+        if titleEmpty && descEmpty && valueEmpty {
+            // Try parameterized text attributes
+            if let range = element.visibleCharacterRange(), range.length > 0 {
+                value = element.string(forRange: range)
+            } else if let numChars = element.numberOfCharacters(), numChars > 0 {
+                let fullRange = CFRange(location: 0, length: Int(numChars))
+                value = element.string(forRange: fullRange)
+            }
+        }
+
+        let text = title ?? desc
+        let hasContent = (text != nil && !text!.isEmpty) || (value != nil && !value!.isEmpty)
+
+        if hasContent && Self.textRoles.contains(role) {
+            let displayText: String
+            if let text = text, let value = value, !value.isEmpty && value != text {
+                displayText = "\(text): \(value)"
+            } else {
+                displayText = text ?? value ?? ""
+            }
+
+            // Skip shallow AXGroup with long text (just aggregated children text)
+            // Deep groups (depth > 15) are likely real content (email body, etc.)
+            if role == "AXGroup" && displayText.count > 150 && depth < 15 {
+                // Still recurse into children below
+            } else {
+            let contentType: String
+            switch role {
+            case "AXHeading": contentType = "heading"
+            case "AXLink": contentType = "link"
+            case "AXButton", "AXPopUpButton": contentType = "button"
+            case "AXTextField", "AXTextArea", "AXComboBox": contentType = "input"
+            case "AXImage": contentType = "image"
+            case "AXCell": contentType = "cell"
+            case "AXRow": contentType = "row"
+            case "AXCheckBox", "AXRadioButton": contentType = "control"
+            case "AXTable", "AXList": contentType = "list"
+            case "AXGroup": contentType = "group"
+            default: contentType = "text"
+            }
+
+            // Truncate very long text
+            let truncated = displayText.count > 500
+                ? String(displayText.prefix(500)) + "..."
+                : displayText
+
+            // Deduplicate: skip if the previous item has the exact same text
+            let isDuplicate = items.last.map { $0.text == truncated } ?? false
+            if !isDuplicate && !truncated.isEmpty {
+                items.append(ContentItem(
+                    type: contentType,
+                    text: truncated,
+                    role: role,
+                    depth: depth
+                ))
+            }
+            } // end else (not long AXGroup)
+        }
+
+        // Recurse into children
+        guard let children = element.children() else { return }
+        for child in children.prefix(100) {
+            extractContent(child, depth: depth + 1, maxDepth: maxDepth, items: &items, visited: &visited)
+        }
+    }
+
+    /// Deep find — searches from the content root (skipping menus) with fresh depth budget.
+    /// This finds elements that the regular findElements misses because they're too deep.
+    public func findElementsDeep(
+        query: String,
+        role: String? = nil,
+        appName: String? = nil,
+        maxDepth: Int = 15
+    ) -> [ElementNode] {
+        let targetApp = appName ?? currentState.frontmostApp?.name
+        guard let app = targetApp else { return [] }
+        guard let appInfo = currentState.apps.first(where: {
+            $0.name.localizedCaseInsensitiveContains(app)
+        }) else { return [] }
+
+        guard let contentRoot = findContentRoot(pid: appInfo.pid) else { return [] }
+
+        var visited = Set<UInt>()
+        let root = ElementNode.from(contentRoot, depth: maxDepth, maxChildren: 100, visited: &visited)
+            ?? ElementNode(
+                id: "empty", role: "Unknown", label: nil, value: nil,
+                roleDescription: nil, position: nil, size: nil,
+                isInteractive: false, isEnabled: false, isFocused: false,
+                actions: nil, children: nil
+            )
+        return searchTree(root, query: query, role: role)
+    }
+
     // MARK: - Element Search
 
     private func searchTree(_ node: ElementNode, query: String, role: String?) -> [ElementNode] {

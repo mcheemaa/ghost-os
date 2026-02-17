@@ -110,6 +110,48 @@ public struct WindowInfo: Codable, Sendable {
     }
 }
 
+// MARK: - Content Reading
+
+/// A single piece of readable content extracted from the screen
+public struct ContentItem: Codable, Sendable {
+    public let type: String     // "heading", "text", "link", "button", "input", "image", "cell"
+    public let text: String     // the actual readable text
+    public let role: String     // AX role for context
+    public let depth: Int       // nesting level (for indentation)
+
+    public init(type: String, text: String, role: String, depth: Int) {
+        self.type = type
+        self.text = text
+        self.role = role
+        self.depth = depth
+    }
+
+    /// Render as a human-readable line
+    public func render() -> String {
+        let indent = String(repeating: "  ", count: min(depth, 4))
+        switch type {
+        case "heading":
+            return "\(indent)# \(text)"
+        case "link":
+            return "\(indent)[\(text)]"
+        case "button":
+            return "\(indent)(\(text))"
+        case "input":
+            return "\(indent)[\(text)]"
+        case "image":
+            return "\(indent)[image: \(text)]"
+        case "row":
+            return "\(indent)> \(text)"
+        case "control":
+            return "\(indent)[\(text)]"
+        case "list":
+            return "\(indent)--- \(text) ---"
+        default:
+            return "\(indent)\(text)"
+        }
+    }
+}
+
 // MARK: - State Diffing
 
 /// Represents changes between two screen states

@@ -227,6 +227,18 @@ public final class GhostDaemon {
         return rpcHandler.dispatch(request)
     }
 
+    /// Read content from an app (for `ghost read`)
+    public func readContent(app: String? = nil, maxDepth: Int = 20) -> [ContentItem] {
+        stateManager.refresh()
+        return stateManager.readContent(appName: app, maxDepth: maxDepth)
+    }
+
+    /// Deep find elements (skips menus, searches deeper)
+    public func findElementsDeep(query: String, role: String? = nil, app: String? = nil, maxDepth: Int = 15) -> [ElementNode] {
+        stateManager.refresh()
+        return stateManager.findElementsDeep(query: query, role: role, appName: app, maxDepth: maxDepth)
+    }
+
     /// Check accessibility permissions
     public func checkPermissions() -> Bool {
         let status = getPermissionsStatus()
