@@ -1,17 +1,24 @@
 // main.swift — Ghost OS CLI tool
 // Usage:
 //   ghost daemon start          Start the daemon (foreground)
-//   ghost state                 Print full screen state
-//   ghost state --app Chrome    State for specific app
+//   ghost daemon status         Check if daemon is running
+//   ghost state                 Print full screen state (JSON)
 //   ghost state --summary       Compact text summary
+//   ghost state --app Chrome    State for specific app
+//   ghost tree                  Dump element tree of frontmost app
+//   ghost tree --app Chrome     Dump tree for specific app
+//   ghost tree --depth 8        Limit depth (default 5)
 //   ghost find "Search"         Find elements matching query
 //   ghost find --role button    Filter by role
-//   ghost click "Compose"       Click element by label
+//   ghost click "Compose"       Smart click — fuzzy find + click
 //   ghost click --at 680,52     Click at coordinates
 //   ghost type "Hello world"    Type text
 //   ghost press return          Press a key
 //   ghost hotkey cmd,s           Key combo
 //   ghost focus Chrome           Focus an app
+//   ghost diff                   Show what changed since last check
+//   ghost watch                  Continuous state change monitoring
+//   ghost describe               Natural language screen description
 //   ghost permissions            Check accessibility permissions
 
 import Foundation
@@ -48,6 +55,14 @@ func main() async {
         await handleHotkey(subArgs)
     case "focus":
         await handleFocus(subArgs)
+    case "scroll":
+        await handleScroll(subArgs)
+    case "diff":
+        await handleDiff(subArgs)
+    case "watch":
+        await handleWatch(subArgs)
+    case "describe":
+        await handleDescribe(subArgs)
     case "permissions":
         await handlePermissions()
     case "help", "--help", "-h":
@@ -69,17 +84,10 @@ func handleDaemon(_ args: [String]) async {
         let daemon = GhostDaemon()
         do {
             try daemon.start()
-            // Keep running until interrupted
-            signal(SIGINT, SIG_IGN)
-            let sigintSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
-            sigintSource.setEventHandler {
-                daemon.stop()
-                exit(0)
-            }
-            sigintSource.resume()
-            // Block forever (can't use RunLoop.main.run() from async)
+            // GhostDaemon installs its own signal handlers for graceful shutdown.
+            // Block forever — daemon runs until SIGINT/SIGTERM.
             await withCheckedContinuation { (_: CheckedContinuation<Void, Never>) in
-                // Never resumes — daemon runs until SIGINT
+                // Never resumes
             }
         } catch {
             print("Error: \(error)")
@@ -87,22 +95,28 @@ func handleDaemon(_ args: [String]) async {
         }
 
     case "status":
-        // Check if daemon is running by trying to connect
-        do {
-            let response = try IPCServer.sendRequest(
-                RPCRequest(method: "ping", id: 1)
-            )
-            if response.error == nil {
-                print("Ghost daemon is running")
-                print("Socket: \(IPCServer.defaultSocketPath())")
+        if GhostDaemon.isDaemonRunning() {
+            print("Ghost daemon is running")
+            if let pid = GhostDaemon.existingDaemonPID() {
+                print("PID: \(pid)")
             }
-        } catch {
+            print("Socket: \(IPCServer.defaultSocketPath())")
+        } else {
             print("Ghost daemon is NOT running")
             exit(1)
         }
 
+    case "stop":
+        if let pid = GhostDaemon.existingDaemonPID() {
+            kill(pid, SIGTERM)
+            print("Sent SIGTERM to daemon (PID \(pid))")
+        } else {
+            print("Ghost daemon is not running")
+            exit(1)
+        }
+
     default:
-        print("Usage: ghost daemon [start|status]")
+        print("Usage: ghost daemon [start|stop|status]")
     }
 }
 
@@ -122,11 +136,7 @@ func handleState(_ args: [String]) async {
     }
 
     // Direct mode (no daemon)
-    let daemon = GhostDaemon()
-    guard daemon.checkPermissions() else {
-        print("Error: Accessibility permissions not granted")
-        exit(1)
-    }
+    let daemon = directDaemon()
     let state = daemon.getState()
 
     if let app = appName {
@@ -149,12 +159,21 @@ func handleTree(_ args: [String]) async {
     let depth = depthStr.flatMap(Int.init) ?? 5
     let useJSON = args.contains("--json")
 
-    let daemon = GhostDaemon()
-    guard daemon.checkPermissions() else {
-        print("Error: Accessibility permissions not granted")
-        exit(1)
+    // Try daemon first
+    if let response = trySendToDaemon(
+        method: "getTree",
+        params: RPCParams(app: appName, depth: depth)
+    ) {
+        if !useJSON, case let .tree(tree) = response.result {
+            print(tree.renderTree())
+        } else {
+            printJSON(response)
+        }
+        return
     }
 
+    // Direct mode
+    let daemon = directDaemon()
     guard let tree = daemon.getTree(app: appName, depth: depth) else {
         print("No app found\(appName.map { " matching '\($0)'" } ?? "")")
         return
@@ -171,14 +190,46 @@ func handleTree(_ args: [String]) async {
 func handleFind(_ args: [String]) async {
     let role = flagValue(args, flag: "--role")
     let appName = flagValue(args, flag: "--app")
+    let limitStr = flagValue(args, flag: "--limit")
+    let limit = limitStr.flatMap(Int.init) ?? 20
+    let useSmart = args.contains("--smart")
+
     // Collect flag values so we can exclude them from the query
     let flagValues: Set<String> = Set(
-        ["--role", "--app"].compactMap { flagValue(args, flag: $0) }
+        ["--role", "--app", "--limit"].compactMap { flagValue(args, flag: $0) }
     )
     let query = args.first(where: { !$0.hasPrefix("-") && !flagValues.contains($0) }) ?? ""
 
     guard !query.isEmpty || role != nil else {
-        print("Usage: ghost find <query> [--role button] [--app Chrome]")
+        print("Usage: ghost find <query> [--role button] [--app Chrome] [--smart] [--limit 20]")
+        return
+    }
+
+    // Smart mode uses SmartResolver for fuzzy, scored matching
+    if useSmart {
+        let daemon = directDaemon()
+        guard let tree = daemon.getTree(app: appName, depth: 8) else {
+            print("No app found")
+            return
+        }
+        let resolver = SmartResolver()
+        let matches = resolver.resolve(
+            query: query.isEmpty ? "" : query,
+            role: role,
+            in: tree,
+            limit: limit
+        )
+        if matches.isEmpty {
+            print("No matches found")
+        } else {
+            for (i, match) in matches.enumerated() {
+                let label = match.node.label ?? match.node.id
+                let pos = match.node.position.map {
+                    " at (\(Int($0.x)),\(Int($0.y)))"
+                } ?? ""
+                print("  \(i + 1). [\(match.score)] \(match.node.role) \"\(label)\"\(pos) — \(match.matchReason)")
+            }
+        }
         return
     }
 
@@ -191,17 +242,18 @@ func handleFind(_ args: [String]) async {
     }
 
     // Direct mode
-    let daemon = GhostDaemon()
-    guard daemon.checkPermissions() else {
-        print("Error: Accessibility permissions not granted")
-        exit(1)
-    }
+    let daemon = directDaemon()
     let elements = daemon.findElements(query: query, role: role, app: appName)
-    printJSON(elements)
+    if elements.isEmpty {
+        print("No elements found")
+    } else {
+        printJSON(elements)
+    }
 }
 
 @MainActor
 func handleClick(_ args: [String]) async {
+    // Coordinate mode: ghost click --at x,y
     if let coordStr = flagValue(args, flag: "--at") {
         let parts = coordStr.split(separator: ",").compactMap { Double($0) }
         guard parts.count == 2 else {
@@ -210,39 +262,106 @@ func handleClick(_ args: [String]) async {
         }
         let params = RPCParams(x: parts[0], y: parts[1])
         if let response = trySendToDaemon(method: "click", params: params) {
-            printJSON(response)
+            printResult(response)
         } else {
-            print("Daemon not running. Start with: ghost daemon start")
+            // Direct mode for coordinate click
+            let daemon = directDaemon()
+            let result = daemon.execute(action: "click", params: params)
+            printResult(result)
         }
         return
     }
 
-    let target = args.first(where: { !$0.hasPrefix("-") }) ?? ""
+    // Label mode: ghost click "Compose" --app Chrome
+    let appName = flagValue(args, flag: "--app")
+    let flagValues: Set<String> = Set(
+        ["--app"].compactMap { flagValue(args, flag: $0) }
+    )
+    let target = args.first(where: { !$0.hasPrefix("-") && !flagValues.contains($0) }) ?? ""
     guard !target.isEmpty else {
-        print("Usage: ghost click <label> or ghost click --at x,y")
+        print("Usage: ghost click <label> [--app name] or ghost click --at x,y")
         return
     }
-    let appName = flagValue(args, flag: "--app")
-    let params = RPCParams(target: target, app: appName)
-    if let response = trySendToDaemon(method: "click", params: params) {
-        printJSON(response)
+
+    // Try smart click via daemon first
+    if let response = trySendToDaemon(
+        method: "smartClick",
+        params: RPCParams(target: target, app: appName)
+    ) {
+        printResult(response)
+        return
+    }
+
+    // Direct mode: smart click using SmartResolver
+    let daemon = directDaemon()
+    guard let tree = daemon.getTree(app: appName, depth: 8) else {
+        print("No app found")
+        return
+    }
+    let stateManager = StateManager()
+    stateManager.refresh()
+    let executor = ActionExecutor(stateManager: stateManager)
+    let result = executor.smartClick(query: target, in: tree)
+    if result.success {
+        print(result.description)
     } else {
-        print("Daemon not running. Start with: ghost daemon start")
+        print("Error: \(result.description)")
+        exit(1)
     }
 }
 
 @MainActor
 func handleType(_ args: [String]) async {
-    let text = args.joined(separator: " ")
+    let appName = flagValue(args, flag: "--app")
+    let target = flagValue(args, flag: "--into")
+
+    // Remove flags from text
+    let flagKeys: Set<String> = ["--app", "--into"]
+    let flagVals: Set<String> = Set(
+        flagKeys.compactMap { flagValue(args, flag: $0) }
+    )
+    let text = args.filter { !$0.hasPrefix("-") && !flagVals.contains($0) }.joined(separator: " ")
     guard !text.isEmpty else {
-        print("Usage: ghost type <text>")
+        print("Usage: ghost type <text> [--into <field>] [--app <name>]")
         return
     }
+
+    // With --into: use smart type to find field first
+    if target != nil {
+        if let response = trySendToDaemon(
+            method: "smartType",
+            params: RPCParams(target: target, text: text, app: appName)
+        ) {
+            printResult(response)
+            return
+        }
+        // Direct mode smart type
+        let daemon = directDaemon()
+        guard let tree = daemon.getTree(app: appName, depth: 8) else {
+            print("No app found")
+            return
+        }
+        let stateManager = StateManager()
+        stateManager.refresh()
+        let executor = ActionExecutor(stateManager: stateManager)
+        let result = executor.smartType(text: text, target: target, in: tree)
+        if result.success {
+            print(result.description)
+        } else {
+            print("Error: \(result.description)")
+            exit(1)
+        }
+        return
+    }
+
+    // Simple type at current focus
     let params = RPCParams(text: text)
     if let response = trySendToDaemon(method: "type", params: params) {
-        printJSON(response)
+        printResult(response)
     } else {
-        print("Daemon not running. Start with: ghost daemon start")
+        let daemon = directDaemon()
+        let result = daemon.execute(action: "type", params: params)
+        printResult(result)
     }
 }
 
@@ -254,9 +373,11 @@ func handlePress(_ args: [String]) async {
     }
     let params = RPCParams(key: key)
     if let response = trySendToDaemon(method: "press", params: params) {
-        printJSON(response)
+        printResult(response)
     } else {
-        print("Daemon not running. Start with: ghost daemon start")
+        let daemon = directDaemon()
+        let result = daemon.execute(action: "press", params: params)
+        printResult(result)
     }
 }
 
@@ -269,9 +390,26 @@ func handleHotkey(_ args: [String]) async {
     let keys = keysStr.split(separator: ",").map { String($0) }
     let params = RPCParams(keys: keys)
     if let response = trySendToDaemon(method: "hotkey", params: params) {
-        printJSON(response)
+        printResult(response)
     } else {
-        print("Daemon not running. Start with: ghost daemon start")
+        let daemon = directDaemon()
+        let result = daemon.execute(action: "hotkey", params: params)
+        printResult(result)
+    }
+}
+
+@MainActor
+func handleScroll(_ args: [String]) async {
+    let direction = args.first(where: { !$0.hasPrefix("-") }) ?? "down"
+    let amountStr = flagValue(args, flag: "--amount")
+    let amount = amountStr.flatMap(Double.init) ?? 3.0
+    let params = RPCParams(direction: direction, amount: amount)
+    if let response = trySendToDaemon(method: "scroll", params: params) {
+        printResult(response)
+    } else {
+        let daemon = directDaemon()
+        let result = daemon.execute(action: "scroll", params: params)
+        printResult(result)
     }
 }
 
@@ -283,9 +421,117 @@ func handleFocus(_ args: [String]) async {
     }
     let params = RPCParams(app: appName)
     if let response = trySendToDaemon(method: "focus", params: params) {
-        printJSON(response)
+        printResult(response)
     } else {
-        print("Daemon not running. Start with: ghost daemon start")
+        let daemon = directDaemon()
+        let result = daemon.execute(action: "focus", params: params)
+        printResult(result)
+    }
+}
+
+@MainActor
+func handleDiff(_ args: [String]) async {
+    // Diff needs two refreshes — the first establishes baseline, second computes diff
+    if let response = trySendToDaemon(method: "getDiff") {
+        if case let .diff(diff) = response.result {
+            if diff.changes.isEmpty {
+                print("No changes detected")
+            } else {
+                print(diff.summary())
+            }
+        } else {
+            printResult(response)
+        }
+        return
+    }
+
+    // Direct mode: do two refreshes to get a diff
+    let daemon = directDaemon()
+    // First call builds baseline
+    _ = daemon.getState()
+    // Small delay for things to settle
+    try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
+    // Second call computes diff
+    _ = daemon.getState()
+    let response = daemon.execute(action: "getDiff", params: RPCParams())
+    printResult(response)
+}
+
+@MainActor
+func handleWatch(_ args: [String]) async {
+    let intervalStr = flagValue(args, flag: "--interval")
+    let interval = intervalStr.flatMap(Double.init) ?? 1.0
+    let appName = flagValue(args, flag: "--app")
+    let useSummary = !args.contains("--verbose")
+
+    print("Watching for screen changes (interval: \(interval)s, Ctrl+C to stop)...\n")
+
+    let daemon = directDaemon()
+    // Build initial state
+    var previousSummary = ""
+
+    while true {
+        let state = daemon.getState()
+
+        if useSummary {
+            let summary = state.summary()
+            if summary != previousSummary {
+                if !previousSummary.isEmpty {
+                    // Show timestamp for updates
+                    let formatter = DateFormatter()
+                    formatter.dateFormat = "HH:mm:ss"
+                    print("--- \(formatter.string(from: Date())) ---")
+                }
+                print(summary)
+                print("")
+                previousSummary = summary
+            }
+        } else {
+            // Verbose mode — show full diff
+            let diff = daemon.execute(
+                action: "getDiff",
+                params: RPCParams(app: appName)
+            )
+            if case let .diff(d) = diff.result, d.isSignificant {
+                let formatter = DateFormatter()
+                formatter.dateFormat = "HH:mm:ss"
+                print("[\(formatter.string(from: Date()))] \(d.summary())")
+            }
+        }
+
+        // Sleep for the interval
+        try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+    }
+}
+
+@MainActor
+func handleDescribe(_ args: [String]) async {
+    let appName = flagValue(args, flag: "--app")
+    let depth = flagValue(args, flag: "--depth").flatMap(Int.init) ?? 3
+
+    // Try daemon
+    if let response = trySendToDaemon(
+        method: "describe",
+        params: RPCParams(app: appName, depth: depth)
+    ) {
+        if case let .message(msg) = response.result {
+            print(msg)
+        } else {
+            printResult(response)
+        }
+        return
+    }
+
+    // Direct mode
+    let daemon = directDaemon()
+    let state = daemon.getState()
+    print(state.summary())
+
+    if let app = appName {
+        if let tree = daemon.getTree(app: app, depth: depth) {
+            print("\nElement tree for \(app):")
+            print(tree.renderTree())
+        }
     }
 }
 
@@ -306,6 +552,18 @@ func handlePermissions() async {
 
 // MARK: - Helpers
 
+/// Create a GhostDaemon for direct mode (no IPC, runs in-process)
+@MainActor
+func directDaemon() -> GhostDaemon {
+    let daemon = GhostDaemon()
+    guard daemon.checkPermissions() else {
+        print("Error: Accessibility permissions not granted")
+        print("Run: ghost permissions")
+        exit(1)
+    }
+    return daemon
+}
+
 func trySendToDaemon(method: String, params: RPCParams? = nil) -> RPCResponse? {
     let request = RPCRequest(method: method, params: params, id: 1)
     return try? IPCServer.sendRequest(request)
@@ -325,41 +583,81 @@ func printJSON<T: Encodable>(_ value: T) {
     }
 }
 
+/// Print an RPC response in a human-friendly way
+func printResult(_ response: RPCResponse) {
+    if let error = response.error {
+        print("Error: \(error.message)")
+        return
+    }
+    guard let result = response.result else {
+        print("(no result)")
+        return
+    }
+    switch result {
+    case .message(let msg):
+        print(msg)
+    case .bool(let val):
+        print(val ? "true" : "false")
+    case .state(let state):
+        printJSON(state)
+    case .elements(let elements):
+        printJSON(elements)
+    case .tree(let tree):
+        print(tree.renderTree())
+    case .diff(let diff):
+        print(diff.summary())
+    case .app(let app):
+        printJSON(app)
+    }
+}
+
 func printUsage() {
     print("""
     Ghost OS CLI — Accessibility-first computer perception
 
     USAGE:
       ghost daemon start          Start the daemon (foreground)
+      ghost daemon stop           Stop the running daemon
       ghost daemon status         Check if daemon is running
       ghost state                 Print full screen state (JSON)
       ghost state --summary       Compact text summary
       ghost state --app <name>    State for specific app
       ghost tree                  Dump element tree of frontmost app
-      ghost tree --app <name>    Dump tree for specific app
-      ghost tree --depth <n>     Limit depth (default 5)
-      ghost tree --json          Output as JSON instead of text
+      ghost tree --app <name>     Dump tree for specific app
+      ghost tree --depth <n>      Limit depth (default 5)
+      ghost tree --json           Output as JSON instead of text
       ghost find <query>          Find elements matching query
       ghost find --role <role>    Filter by role (button, textfield, etc.)
-      ghost click <label>         Click element by label
-      ghost click --at x,y        Click at coordinates
+      ghost find --smart          Use fuzzy matching with confidence scores
+      ghost click <label>         Smart click — find best match and click it
+      ghost click --at x,y        Click at exact coordinates
       ghost type <text>           Type text at current focus
+      ghost type <text> --into <field>  Find field first, then type
       ghost press <key>           Press key (return, tab, escape, etc.)
       ghost hotkey <keys>         Key combo (cmd,s  cmd,shift,t)
+      ghost scroll [up|down]      Scroll (default: down)
       ghost focus <app>           Bring app to foreground
+      ghost diff                  Show what changed since last state check
+      ghost watch                 Live monitor — shows changes in real-time
+      ghost describe              Natural language screen description
+      ghost describe --app <name> Include element tree for specific app
       ghost permissions           Check accessibility permissions
 
     EXAMPLES:
       ghost state --summary
-      ghost tree --app Chrome
+      ghost tree --app Chrome --depth 6
       ghost find "Send" --role button
-      ghost click "Compose" --app Gmail
+      ghost find "Compose" --smart --app Chrome
+      ghost click "Compose" --app Chrome
       ghost type "Hello world"
+      ghost type "test" --into "Search" --app Chrome
       ghost hotkey cmd,shift,n
+      ghost watch --interval 2
+      ghost describe --app "System Settings"
 
-    The CLI connects to a running daemon via Unix socket.
-    If no daemon is running, 'state' and 'find' work in direct mode.
-    Other commands require the daemon. Start it with: ghost daemon start
+    Most commands work in direct mode (no daemon needed).
+    The daemon enables real-time change tracking via AX observers.
+    Start it with: ghost daemon start
     """)
 }
 

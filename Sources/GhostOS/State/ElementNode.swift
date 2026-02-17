@@ -123,10 +123,10 @@ extension ElementNode {
         // Value — try to get a string representation
         var valueStr: String? = nil
         if let v = element.value() {
-            let s = String(describing: v)
+            let s = String(describing: v).trimmingCharacters(in: .whitespacesAndNewlines)
             // Filter unhelpful values
-            if !s.isEmpty && !(s == "0" && role != "AXSlider") {
-                valueStr = s
+            if !s.isEmpty && s != "nil" && !(s == "0" && role != "AXSlider") {
+                valueStr = s.count > 200 ? String(s.prefix(200)) + "..." : s
             }
         }
 

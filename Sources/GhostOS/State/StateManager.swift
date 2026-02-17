@@ -16,6 +16,8 @@ public final class StateManager {
     // MARK: - State
 
     private var currentState: ScreenState
+    private var previousState: ScreenState?
+    private(set) var lastDiff: StateDiff?
     private var stateVersion: UInt64 = 0
 
     // Apps to ignore (system services, background daemons)
@@ -44,6 +46,11 @@ public final class StateManager {
     /// Get the current screen state
     public func getState() -> ScreenState {
         currentState
+    }
+
+    /// Get the most recent state diff (what changed since last refresh)
+    public func getDiff() -> StateDiff? {
+        lastDiff
     }
 
     /// Get state for a specific app only
@@ -129,12 +136,15 @@ public final class StateManager {
 
         let frontAppInfo = apps.first { $0.isActive }
 
-        self.currentState = ScreenState(
+        let newState = ScreenState(
             timestamp: Date(),
             frontmostApp: frontAppInfo,
             focusedElement: focusedNode,
             apps: apps
         )
+        self.lastDiff = computeDiff(from: currentState, to: newState)
+        self.previousState = currentState
+        self.currentState = newState
         self.stateVersion += 1
     }
 
@@ -179,12 +189,15 @@ public final class StateManager {
 
         let frontAppInfo = updatedApps.first { $0.isActive }
 
-        self.currentState = ScreenState(
+        let newState = ScreenState(
             timestamp: Date(),
             frontmostApp: frontAppInfo,
             focusedElement: focusedNode,
             apps: updatedApps
         )
+        self.lastDiff = computeDiff(from: currentState, to: newState)
+        self.previousState = currentState
+        self.currentState = newState
         self.stateVersion += 1
     }
 
@@ -204,12 +217,15 @@ public final class StateManager {
             windows: windows
         )
 
-        self.currentState = ScreenState(
+        let newState = ScreenState(
             timestamp: Date(),
             frontmostApp: updatedApps.first { $0.isActive },
             focusedElement: currentState.focusedElement,
             apps: updatedApps
         )
+        self.lastDiff = computeDiff(from: currentState, to: newState)
+        self.previousState = currentState
+        self.currentState = newState
         self.stateVersion += 1
     }
 
@@ -318,6 +334,81 @@ public final class StateManager {
                 isMinimized: false
             )
         }
+    }
+
+    // MARK: - State Diffing
+
+    /// Compute the diff between two screen states
+    private func computeDiff(from old: ScreenState, to new: ScreenState) -> StateDiff {
+        var changes: [StateChange] = []
+
+        let oldAppNames = Set(old.apps.map { $0.name })
+        let newAppNames = Set(new.apps.map { $0.name })
+
+        // App launched / quit
+        for name in newAppNames.subtracting(oldAppNames) {
+            changes.append(.appLaunched(name: name))
+        }
+        for name in oldAppNames.subtracting(newAppNames) {
+            changes.append(.appQuit(name: name))
+        }
+
+        // Active app changed
+        if let newFront = new.frontmostApp,
+           old.frontmostApp?.name != newFront.name {
+            changes.append(.appActivated(name: newFront.name))
+        }
+
+        // Window changes per app (only for apps present in both states)
+        let oldAppsByName = Dictionary(old.apps.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
+        for newApp in new.apps {
+            guard let oldApp = oldAppsByName[newApp.name] else { continue }
+
+            let oldTitles = oldApp.windows.map { $0.title }
+            let newTitles = newApp.windows.map { $0.title }
+
+            // Use multisets for window comparison (apps can have multiple windows with same title)
+            var oldTitleCounts: [String: Int] = [:]
+            for t in oldTitles {
+                let key = t ?? ""
+                oldTitleCounts[key, default: 0] += 1
+            }
+            var newTitleCounts: [String: Int] = [:]
+            for t in newTitles {
+                let key = t ?? ""
+                newTitleCounts[key, default: 0] += 1
+            }
+
+            // Windows opened (in new but not old)
+            for (title, count) in newTitleCounts {
+                let oldCount = oldTitleCounts[title] ?? 0
+                for _ in 0..<max(0, count - oldCount) {
+                    changes.append(.windowOpened(app: newApp.name, title: title.isEmpty ? nil : title))
+                }
+            }
+
+            // Windows closed (in old but not new)
+            for (title, count) in oldTitleCounts {
+                let newCount = newTitleCounts[title] ?? 0
+                for _ in 0..<max(0, count - newCount) {
+                    changes.append(.windowClosed(app: newApp.name, title: title.isEmpty ? nil : title))
+                }
+            }
+
+        }
+
+        // Focus changed
+        if let newFocused = new.focusedElement {
+            let oldFocusId = old.focusedElement?.id
+            if newFocused.id != oldFocusId {
+                let appName = new.frontmostApp?.name ?? "unknown"
+                let label = newFocused.label.flatMap({ $0.isEmpty ? nil : $0 })
+                let desc = label != nil ? "\(newFocused.role) \"\(label!)\"" : newFocused.role
+                changes.append(.focusChanged(app: appName, element: desc))
+            }
+        }
+
+        return StateDiff(timestamp: Date(), changes: changes)
     }
 
     // MARK: - Element Search

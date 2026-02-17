@@ -81,6 +81,8 @@ public struct RPCResponse: Codable, Sendable {
 public enum RPCResult: Codable, Sendable {
     case state(ScreenState)
     case elements([ElementNode])
+    case tree(ElementNode)
+    case diff(StateDiff)
     case app(AppInfo)
     case message(String)
     case bool(Bool)
@@ -99,6 +101,12 @@ public enum RPCResult: Codable, Sendable {
         case let .elements(elements):
             try container.encode("elements", forKey: .type)
             try container.encode(elements, forKey: .data)
+        case let .tree(tree):
+            try container.encode("tree", forKey: .type)
+            try container.encode(tree, forKey: .data)
+        case let .diff(diff):
+            try container.encode("diff", forKey: .type)
+            try container.encode(diff, forKey: .data)
         case let .app(app):
             try container.encode("app", forKey: .type)
             try container.encode(app, forKey: .data)
@@ -119,6 +127,10 @@ public enum RPCResult: Codable, Sendable {
             self = .state(try container.decode(ScreenState.self, forKey: .data))
         case "elements":
             self = .elements(try container.decode([ElementNode].self, forKey: .data))
+        case "tree":
+            self = .tree(try container.decode(ElementNode.self, forKey: .data))
+        case "diff":
+            self = .diff(try container.decode(StateDiff.self, forKey: .data))
         case "app":
             self = .app(try container.decode(AppInfo.self, forKey: .data))
         case "message":

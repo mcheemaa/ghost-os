@@ -132,6 +132,99 @@ public final class ActionExecutor {
         return "Performed \(action) on '\(target)'"
     }
 
+    // MARK: - Smart Actions (powered by SmartResolver)
+
+    /// Smart click — find the best matching element and click its center.
+    /// Uses fuzzy matching, so "Compose" will find " Compose", "Compose Mail", etc.
+    public func smartClick(
+        query: String,
+        role: String? = nil,
+        in root: ElementNode
+    ) -> (success: Bool, description: String) {
+        let resolver = SmartResolver()
+        let matches = resolver.resolve(query: query, role: role, in: root, limit: 5)
+
+        guard let best = matches.first else {
+            return (false, "No match for '\(query)'")
+        }
+
+        // Require score >= 60 for confident click
+        guard best.score >= 60 else {
+            let label = best.node.label ?? best.node.id
+            return (false, "No confident match for '\(query)'. Best: '\(label)' (score: \(best.score), \(best.matchReason))")
+        }
+
+        guard let pos = best.node.position else {
+            let label = best.node.label ?? best.node.id
+            return (false, "Found '\(label)' but it has no screen position")
+        }
+
+        let center = CGPoint(
+            x: pos.x + (best.node.size?.width ?? 0) / 2,
+            y: pos.y + (best.node.size?.height ?? 0) / 2
+        )
+
+        do {
+            try InputDriver.click(at: center)
+            let label = best.node.label ?? best.node.id
+            return (true, "Clicked '\(label)' at (\(Int(center.x)), \(Int(center.y))) — \(best.matchReason)")
+        } catch {
+            return (false, "Click failed: \(error)")
+        }
+    }
+
+    /// Smart type — optionally find a target text field first, then type text.
+    /// If target is nil, types at current focus.
+    public func smartType(
+        text: String,
+        target: String? = nil,
+        role: String? = nil,
+        in root: ElementNode
+    ) -> (success: Bool, description: String) {
+        // If a target is specified, find and click it first to focus it
+        if let target = target {
+            let textFieldRole = role ?? "AXTextField"
+            let resolver = SmartResolver()
+            let matches = resolver.resolve(query: target, role: textFieldRole, in: root, limit: 5)
+
+            guard let best = matches.first, best.score >= 60 else {
+                let hint = matches.first.map {
+                    let label = $0.node.label ?? $0.node.id
+                    return " Best: '\(label)' (score: \($0.score))"
+                } ?? ""
+                return (false, "No confident text field match for '\(target)'.\(hint)")
+            }
+
+            guard let pos = best.node.position else {
+                let label = best.node.label ?? best.node.id
+                return (false, "Found '\(label)' but it has no screen position")
+            }
+
+            let center = CGPoint(
+                x: pos.x + (best.node.size?.width ?? 0) / 2,
+                y: pos.y + (best.node.size?.height ?? 0) / 2
+            )
+
+            do {
+                try InputDriver.click(at: center)
+            } catch {
+                return (false, "Failed to click target field: \(error)")
+            }
+        }
+
+        // Type the text
+        do {
+            try InputDriver.type(text)
+            if let target = target {
+                return (true, "Typed \(text.count) characters into '\(target)'")
+            } else {
+                return (true, "Typed \(text.count) characters at current focus")
+            }
+        } catch {
+            return (false, "Type failed: \(error)")
+        }
+    }
+
     // MARK: - Private
 
     private func findElementInTree(_ element: Element, query: String, depth: Int) -> Element? {

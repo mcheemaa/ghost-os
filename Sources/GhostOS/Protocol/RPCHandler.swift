@@ -58,6 +58,16 @@ public final class RPCHandler {
             return handleScroll(params: params, id: id)
         case "focus":
             return handleFocus(params: params, id: id)
+        case "getTree":
+            return handleGetTree(params: params, id: id)
+        case "getDiff":
+            return handleGetDiff(id: id)
+        case "smartClick":
+            return handleSmartClick(params: params, id: id)
+        case "smartType":
+            return handleSmartType(params: params, id: id)
+        case "describe":
+            return handleDescribe(params: params, id: id)
         case "refresh":
             return handleRefresh(id: id)
         case "ping":
@@ -181,6 +191,74 @@ public final class RPCHandler {
         } catch {
             return .failure(.notFound("\(error)"), id: id)
         }
+    }
+
+    private func handleGetTree(params: RPCParams?, id: Int) -> RPCResponse {
+        stateManager.refresh()
+        let depth = params?.depth ?? 5
+        if let tree = stateManager.getTree(appName: params?.app, depth: depth) {
+            return .success(.tree(tree), id: id)
+        }
+        return .failure(.notFound("No app found"), id: id)
+    }
+
+    private func handleGetDiff(id: Int) -> RPCResponse {
+        stateManager.refresh()
+        if let diff = stateManager.getDiff() {
+            return .success(.diff(diff), id: id)
+        }
+        return .success(.message("No previous state to diff against"), id: id)
+    }
+
+    private func handleSmartClick(params: RPCParams?, id: Int) -> RPCResponse {
+        guard let query = params?.target ?? params?.query else {
+            return .failure(.invalidParams("'target' or 'query' required"), id: id)
+        }
+        stateManager.refresh()
+        guard let tree = stateManager.getTree(appName: params?.app, depth: 8) else {
+            return .failure(.notFound("No app found"), id: id)
+        }
+        let result = actionExecutor.smartClick(query: query, role: params?.role, in: tree)
+        if result.success {
+            return .success(.message(result.description), id: id)
+        }
+        return .failure(.notFound(result.description), id: id)
+    }
+
+    private func handleSmartType(params: RPCParams?, id: Int) -> RPCResponse {
+        guard let text = params?.text else {
+            return .failure(.invalidParams("'text' required"), id: id)
+        }
+        stateManager.refresh()
+        guard let tree = stateManager.getTree(appName: params?.app, depth: 8) else {
+            return .failure(.notFound("No app found"), id: id)
+        }
+        let result = actionExecutor.smartType(
+            text: text,
+            target: params?.target,
+            role: params?.role,
+            in: tree
+        )
+        if result.success {
+            return .success(.message(result.description), id: id)
+        }
+        return .failure(.notFound(result.description), id: id)
+    }
+
+    private func handleDescribe(params: RPCParams?, id: Int) -> RPCResponse {
+        stateManager.refresh()
+        let state = stateManager.getState()
+        var description = state.summary()
+
+        // If a specific app is requested, include its element tree summary
+        if let appName = params?.app {
+            if let tree = stateManager.getTree(appName: appName, depth: 3) {
+                description += "\n\nElement tree for \(appName):\n"
+                description += tree.renderTree()
+            }
+        }
+
+        return .success(.message(description), id: id)
     }
 
     private func handleRefresh(id: Int) -> RPCResponse {
