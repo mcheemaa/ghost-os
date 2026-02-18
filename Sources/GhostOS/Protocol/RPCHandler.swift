@@ -15,7 +15,7 @@ public final class RPCHandler {
         self.stateManager = stateManager
         self.actionExecutor = actionExecutor
         // RecipeEngine needs self (RPCHandler), so we set it up after init
-        self.recipeEngine = RecipeEngine(rpcHandler: self, stateManager: stateManager)
+        self.recipeEngine = RecipeEngine(rpcHandler: self, stateManager: stateManager, actionExecutor: actionExecutor)
     }
 
     /// Process a raw JSON request string and return a JSON response string

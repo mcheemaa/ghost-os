@@ -20,10 +20,12 @@ import Foundation
 public final class RecipeEngine {
     private let rpcHandler: RPCHandler
     private let stateManager: StateManager
+    private let actionExecutor: ActionExecutor
 
-    public init(rpcHandler: RPCHandler, stateManager: StateManager) {
+    public init(rpcHandler: RPCHandler, stateManager: StateManager, actionExecutor: ActionExecutor) {
         self.rpcHandler = rpcHandler
         self.stateManager = stateManager
+        self.actionExecutor = actionExecutor
     }
 
     // MARK: - Public API
@@ -65,7 +67,12 @@ public final class RecipeEngine {
             }
         }
 
-        // 3. Execute steps in sequence
+        // 3. Suppress recording of individual recipe steps.
+        // The outer "run" command is recorded as a single event by dispatch().
+        rpcHandler.recordingManager.isSuppressed = true
+        defer { rpcHandler.recordingManager.isSuppressed = false }
+
+        // 4. Execute steps in sequence
         for step in recipe.steps {
             let stepStart = Date()
 
@@ -156,20 +163,21 @@ public final class RecipeEngine {
             }
 
             // Action succeeded — check wait_after
+            // Call actionExecutor.wait() directly (not through RPC dispatch) so the
+            // baseline context actually reaches the wait call for race condition prevention.
             if let waitCond = step.waitAfter {
-                let waitParams = RPCParams(
-                    app: substituted["app"],
+                let waitResult = actionExecutor.wait(
                     condition: waitCond.condition,
                     value: waitCond.value,
-                    timeout: waitCond.timeout ?? 10.0
+                    timeout: waitCond.timeout ?? 10.0,
+                    interval: 0.5,
+                    appName: substituted["app"],
+                    baseline: baseline
                 )
-                // Pass baseline for race condition prevention
-                let waitRequest = RPCRequest(method: "wait", params: waitParams, id: step.id)
-                let waitResponse = rpcHandler.dispatch(waitRequest)
 
-                if waitResponse.error != nil {
+                if !waitResult.success {
                     // Wait failure ALWAYS stops — action succeeded but expected state didn't materialize
-                    let ctx = extractContext(from: waitResponse) ?? extractContext(from: response)
+                    let ctx = waitResult.context ?? extractContext(from: response)
                     let screenshot = captureFailureScreenshot(appName: substituted["app"])
                     let failInfo = FailedStepInfo(
                         id: step.id, action: step.action,

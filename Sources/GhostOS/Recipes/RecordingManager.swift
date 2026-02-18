@@ -14,10 +14,17 @@ public final class RecordingManager {
     private var steps: [RecordedStep] = []
     private var startTime: Date?
 
+    /// When true, the log() method silently drops all events.
+    /// Used by RecipeEngine to suppress recording of internal recipe steps —
+    /// the outer "run" command is recorded as a single event instead.
+    public var isSuppressed = false
+
     /// Commands that should not be recorded (meta-commands about recording itself).
+    /// Note: "run" is NOT in this list — it gets recorded as a single event.
+    /// The individual steps inside a recipe are suppressed via isSuppressed flag.
     private static let skipMethods: Set<String> = [
         "recordStart", "recordStop", "recordStatus",
-        "run", "recipeList", "recipeShow", "recipeSave", "recipeDelete",
+        "recipeList", "recipeShow", "recipeSave", "recipeDelete",
         "recordingList", "recordingShow",
         "ping",
     ]
@@ -68,6 +75,7 @@ public final class RecordingManager {
     /// Skips meta-commands (recording, recipe management, ping).
     public func log(method: String, params: RPCParams?, response: RPCResponse) {
         guard isRecording else { return }
+        guard !isSuppressed else { return }
         guard !Self.skipMethods.contains(method) else { return }
 
         // Extract description and context from the response
