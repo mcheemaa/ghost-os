@@ -62,6 +62,8 @@ func main() async {
         await handleScroll(subArgs)
     case "screenshot":
         await handleScreenshot(subArgs)
+    case "mcp":
+        await handleMCP()
     case "record":
         await handleRecord(subArgs)
     case "run":
@@ -137,6 +139,21 @@ func handleDaemon(_ args: [String]) async {
     default:
         print("Usage: ghost daemon [start|stop|status]")
     }
+}
+
+@MainActor
+func handleMCP() async {
+    // Fail fast with stderr message — never trigger a system permission dialog
+    guard MCPServer.checkAccessibilityPermission() else {
+        FileHandle.standardError.write(
+            Data(
+                "Ghost OS requires Accessibility permission. Run `ghost setup` to configure.\n"
+                    .utf8))
+        exit(1)
+    }
+
+    let server = MCPServer()
+    server.run()
 }
 
 @MainActor
@@ -1247,6 +1264,7 @@ func printUsage() {
     Ghost OS CLI — Accessibility-first computer perception
 
     USAGE:
+      ghost mcp                   Start MCP server (for Claude Desktop / Claude Code)
       ghost daemon start          Start the daemon (foreground)
       ghost daemon stop           Stop the running daemon
       ghost daemon status         Check if daemon is running
