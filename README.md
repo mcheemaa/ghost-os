@@ -1,103 +1,131 @@
-# Ghost OS
+<p align="center">
+  <h1 align="center">Ghost OS</h1>
+  <p align="center">Make Claude Code control your computer.</p>
+</p>
 
-Give your AI agent eyes and hands on macOS.
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License"></a>
+  <img src="https://img.shields.io/badge/platform-macOS%2014%2B-black.svg" alt="macOS 14+">
+  <img src="https://img.shields.io/badge/swift-6.2-orange.svg" alt="Swift 6.2">
+  <img src="https://img.shields.io/badge/MCP-compatible-green.svg" alt="MCP Compatible">
+</p>
 
-Ghost OS reads the macOS accessibility tree and gives your AI agent structured data about every button, text field, link, and label on screen. No screenshots. No OCR. No pixel-guessing. It can also click, type, scroll, and press keys in any app.
+---
 
-It works with Claude Code, Claude Desktop, or any MCP-compatible AI agent.
+Your AI coding agent can write code, run tests, search files. But it can't see your screen. It can't click a button in Chrome, send an email, fill out a form, or read what's in Slack.
 
-## Quick Start
+Ghost OS fixes that. Install it, and Claude Code can see and operate every app on your Mac.
 
-```bash
-# Build from source (macOS 14+, Swift 6.2+)
-git clone https://github.com/mcheemaa/ghost-os.git
-cd ghost-os
-swift build
-
-# Set up permissions and MCP config
-.build/debug/ghost setup
+```
+You:     "Send an email to sarah@company.com about the Q4 report"
+Claude:  [opens Gmail, clicks Compose, types recipient, subject, body, sends]
+         Done. Email sent from your Gmail account.
 ```
 
-That's it. Start a new Claude Code session and ask it to interact with any app on your screen.
+No screenshots. No vision models burning tokens on pixel-guessing. Ghost OS reads the macOS accessibility tree directly. Every button, text field, link, and label is structured data. The same information screen readers use, delivered as JSON to your AI agent.
 
-## What It Actually Does
-
-```bash
-$ ghost context --app Chrome
-App: Google Chrome
-Window: Inbox (38,207) - cheemawrites@gmail.com - Gmail
-URL: https://mail.google.com/mail/u/0/#inbox
-Focused: AXGroup
-Windows/Tabs: 2
-  1. Inbox (38,207) - cheemawrites@gmail.com - Gmail
-  2. Cloudflare Dashboard
-```
+## Install
 
 ```bash
-$ ghost state --summary
-Screen State (20 apps, 127 windows)
-  Active: iTerm2
-  Focused: AXTextArea "shell" in iTerm2
-  Background: Slack (7w), Messages (12w), GitHub Desktop (6w), ...
+brew install mcheemaa/ghost-os/ghost-os
+ghost setup
 ```
 
-```bash
-$ ghost click "Compose" --app Chrome
-Clicked 'Compose' at (98,342) via synthetic (AX-native .press silently failed)
-  Method: synthetic (AX-native verify-and-retry)
-
-App: Google Chrome
-URL: https://mail.google.com/mail/u/0/#inbox?compose=new
-Focused: AXComboBox "To"
-```
-
-Every action returns what happened and where you ended up. The agent doesn't need a separate call to check the result.
-
-## Why This Exists
-
-Every major AI company is racing to let agents use computers. They all do it the same way: take a screenshot, send it to a frontier vision model, get back "click at pixel (412, 307)", repeat. That's using the most powerful AI ever created to figure out where a button is on screen.
-
-The accessibility tree already has that information. Every app on macOS exposes its UI structure through the accessibility API. The same data that screen readers use to help blind users navigate a computer. Structured, instant, free.
-
-Ghost OS makes that data available to AI agents. Instead of processing a 500KB screenshot through a vision model to find a "Compose" button, the agent gets `AXButton "Compose" at (98, 342)` in 50ms.
-
-## Installation
-
-### From Source
+<details>
+<summary>Build from source</summary>
 
 ```bash
 git clone https://github.com/mcheemaa/ghost-os.git
 cd ghost-os
 swift build
-```
-
-Requirements:
-- macOS 14 (Sonnet) or later
-- Swift 6.2+ (install via [Swiftly](https://swiftlang.github.io/swiftly/))
-- Xcode Command Line Tools
-
-### Setup
-
-```bash
 .build/debug/ghost setup
 ```
 
-The setup wizard walks you through:
-1. **Accessibility permission** - Ghost OS needs this to read the screen. System Settings will open automatically.
-2. **Screen Recording permission** (optional) - Only needed for `ghost screenshot`. Useful for visual debugging.
-3. **MCP configuration** - Auto-detects Claude Code and Claude Desktop, configures them to use Ghost OS.
+Requires macOS 14+, Swift 6.2+ ([install via Swiftly](https://swiftlang.github.io/swiftly/)), Xcode Command Line Tools.
 
-## Using with Claude Code
+</details>
 
-If `ghost setup` detected Claude Code, it already configured the MCP server. Start a new session and Ghost OS tools are available.
+`ghost setup` handles everything: grants permissions, detects Claude Code, configures MCP, runs a verification test. One command.
 
-### Manual setup
+Start a new Claude Code session. That's it. Your agent can now see your screen.
 
-```bash
-claude mcp add --transport stdio ghost-os -- /path/to/ghost mcp
+## What Can It Do
+
+**See any app.** Claude Code can read the content of Chrome, Slack, Messages, Finder, or any app running on your Mac. Web apps work from background. No need to bring them to the front.
+
+```
+You:     "What's on my screen right now?"
+Claude:  Screen State (20 apps, 127 windows)
+           Active: VS Code
+           Background: Chrome (Gmail), Slack (3 unread), Messages, Finder...
 ```
 
-Add the permission allow rule to avoid tool approval prompts. In your project's `.claude/settings.local.json`:
+**Operate any app.** Click buttons, type into fields, press keys, scroll, navigate. Ghost OS tries the fast path first (accessibility API actions) and falls back to synthetic input when needed. Every action tells the agent what happened.
+
+```
+You:     "Click Compose in Gmail"
+Claude:  Clicked 'Compose' at (98,342) via synthetic
+         Now focused: To field in Gmail compose window
+```
+
+**Learn and repeat.** The first time your agent does something, it figures it out step by step. Record that as a recipe. Next time, it runs in seconds. Recipes are parameterized, so "send an email" becomes a reusable template with recipient, subject, and body as inputs.
+
+```
+You:     "Send a test email to john@example.com"
+Claude:  [runs gmail-send recipe: 7 steps, 9.4 seconds, done]
+```
+
+**Debug visually.** When the accessibility tree isn't enough, Ghost OS captures a screenshot and the agent can see what's actually on screen. CAPTCHAs, canvas apps, weird layouts. The screenshot is the escape hatch, not the primary interface.
+
+## How It Works
+
+Most computer-use agents today rely on screenshots and vision models to understand what's on screen. That works, but it's expensive and slow because the model has to extract information (button positions, labels, field values) that the operating system already knows.
+
+Ghost OS takes a different approach. It reads the accessibility tree, the same structured data that screen readers use. Every button, text field, and label is available as JSON, instantly, without a model call.
+
+| | Screenshot approach | Accessibility tree approach |
+|---|---|---|
+| **How it sees** | Screenshot through a vision model | Structured JSON from the OS (50ms) |
+| **How it acts** | "Click at pixel (412, 307)" | `performAction(.press)` on the actual element |
+| **Cost per action** | Vision model API call | Zero (local OS call) |
+| **Speed** | Seconds per action | Milliseconds per action |
+| **Data quality** | Inferred from pixels | Exact labels, roles, positions, values from the app |
+| **Works offline** | Needs API access | Yes (perception is local) |
+
+These approaches aren't mutually exclusive. Ghost OS uses the accessibility tree as the primary source and falls back to screenshots when needed (canvas apps, PDFs, visual debugging). The best tool for each situation.
+
+## The Recipe System
+
+Ghost OS gets faster the more you use it.
+
+**First time:** Your agent navigates Gmail manually. Click Compose, type To, press Enter (to confirm autocomplete), Tab to Subject, type it, Tab to Body, type it, Cmd+Enter to send. 7 steps, figured out on the fly.
+
+**Record it:** Those 7 steps become a recipe. Parameterized with `{{recipient}}`, `{{subject}}`, `{{body}}`.
+
+**Next time:** `ghost run gmail-send` with parameters. Same 7 steps, but replayed instantly. No thinking, no planning, just execution.
+
+**Share it:** Recipes are JSON files. Drop them in `~/.ghost-os/recipes/` and they're available to every agent on your machine. Share them with your team. Share them with the community.
+
+This is the opposite of hand-written skills. The agent learns by doing, records what worked, and reuses it. Every interaction makes it faster.
+
+## Setup
+
+### What `ghost setup` does
+
+1. **Checks Accessibility permission** - Opens System Settings if needed, waits for you to grant it
+2. **Checks Screen Recording permission** (optional) - For `ghost screenshot`
+3. **Detects Claude Code** - Auto-runs `claude mcp add` to register Ghost OS
+4. **Runs verification** - Confirms it can read your screen
+
+### Manual Claude Code setup
+
+If you prefer to configure manually:
+
+```bash
+claude mcp add --transport stdio ghost-os -- ghost mcp
+```
+
+Allow all Ghost OS tools without approval prompts. Add to your `.claude/settings.local.json`:
 
 ```json
 {
@@ -107,146 +135,121 @@ Add the permission allow rule to avoid tool approval prompts. In your project's 
 }
 ```
 
-### Test it
+### Permissions explained
 
-In Claude Code, try:
-- "What apps are on my screen?"
-- "What page is open in Chrome?"
-- "Send an email to test@example.com with subject 'Hello' and body 'Testing Ghost OS'"
+**Accessibility** (required): Ghost OS reads the UI structure of every app through the macOS accessibility API. Your terminal app needs this permission. Go to System Settings > Privacy & Security > Accessibility.
 
-## Using with Claude Desktop
+**Screen Recording** (optional): Only for `ghost screenshot`. Useful when the accessibility tree doesn't tell the whole story (canvas apps, PDFs, visual debugging). Same place in System Settings, under Screen Recording.
 
-Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
+**Important:** Run `ghost setup` before starting Claude Code. If permissions aren't granted beforehand, macOS shows a dialog that steals focus and breaks the agent's workflow.
 
-```json
-{
-  "mcpServers": {
-    "ghost-os": {
-      "command": "/path/to/ghost",
-      "args": ["mcp"]
-    }
-  }
-}
-```
+## CLI
 
-Replace `/path/to/ghost` with the actual path to the binary (e.g., `/Users/you/ghost-os/.build/debug/ghost`).
+28 commands. All work directly, no daemon needed.
 
-## CLI Reference
+<details>
+<summary>Full command reference</summary>
 
-Ghost OS has 28 commands. Every command works in direct mode (no daemon needed).
+### See the screen
 
-### Perception (read the screen, no focus needed for web apps)
-
-| Command | What it does |
+| Command | Description |
 |---------|-------------|
-| `ghost context --app Chrome` | Where am I? URL, focused element, interactive elements |
+| `ghost context --app Chrome` | Current state: URL, focused element, interactive elements |
 | `ghost state --summary` | All running apps and windows |
-| `ghost read --app Chrome` | Read all text content from an app |
-| `ghost find "Send" --deep --app Chrome` | Find elements by text (deep search into web content) |
-| `ghost tree --app Chrome` | Raw accessibility element tree |
+| `ghost read --app Chrome` | Full text content from any app |
+| `ghost find "Send" --deep --app Chrome` | Find elements deep in web content |
+| `ghost tree --app Chrome --depth 8` | Raw accessibility element tree |
 | `ghost describe --app Chrome` | Natural language screen description |
 | `ghost diff` | What changed since last check |
-| `ghost screenshot --app Chrome` | Capture window as PNG (for visual debugging) |
+| `ghost screenshot --app Chrome` | Capture window as PNG |
 
-### Actions (interact with apps)
+### Act on apps
 
-| Command | What it does |
+| Command | Description |
 |---------|-------------|
-| `ghost click "Compose" --app Chrome` | Smart click: fuzzy find + AX-native first + fallback |
-| `ghost click --at 680,52` | Click at exact coordinates |
-| `ghost click "file.txt" --double --app Finder` | Double-click (open files) |
-| `ghost click "file.txt" --right --app Finder` | Right-click (context menu) |
+| `ghost click "Compose" --app Chrome` | Smart click with fuzzy matching |
+| `ghost click --at 680,52` | Click at coordinates |
+| `ghost click "file" --double --app Finder` | Double-click |
+| `ghost click "file" --right --app Finder` | Right-click |
 | `ghost type "Hello" --into "To" --app Chrome` | Type into a specific field |
-| `ghost press return` | Press a key |
+| `ghost type "Hello world"` | Type at current focus |
+| `ghost press return` | Press a single key |
 | `ghost hotkey cmd,s` | Key combination |
-| `ghost scroll down` | Scroll |
+| `ghost scroll down --amount 5` | Scroll |
 | `ghost focus Chrome` | Bring app to foreground |
-| `ghost wait urlContains "google.com" --timeout 10` | Wait for a condition (replaces sleep) |
+| `ghost wait urlContains "google.com" --timeout 10` | Wait for a condition |
 
-### Recipes (multi-step workflows)
+### Recipes
 
-| Command | What it does |
+| Command | Description |
 |---------|-------------|
 | `ghost recipes` | List available recipes |
-| `ghost run gmail-send --param recipient=test@example.com --param subject=Hello --param body=Hi` | Run a recipe |
+| `ghost run gmail-send --param recipient=x --param subject=y --param body=z` | Execute a recipe |
 | `ghost recipe show gmail-send` | View recipe details |
-| `ghost recipe save recipe.json` | Install a recipe from file |
-| `ghost record start my-flow` | Start recording commands |
+| `ghost recipe save recipe.json` | Install a recipe from JSON |
+| `ghost recipe delete my-recipe` | Delete a recipe |
+| `ghost record start my-workflow` | Start recording actions |
 | `ghost record stop` | Stop and save recording |
 
 ### Utility
 
-| Command | What it does |
+| Command | Description |
 |---------|-------------|
 | `ghost setup` | Interactive setup wizard |
-| `ghost mcp` | Start MCP server (spawned by Claude Code/Desktop) |
+| `ghost mcp` | Start MCP server (spawned by Claude Code) |
 | `ghost permissions` | Check accessibility permissions |
-| `ghost version` | Show version |
+| `ghost version` | Print version |
 
-## How It Works
-
-Ghost OS is built on [AXorcist](https://github.com/steipete/AXorcist), a Swift accessibility library. It adds:
-
-- **StateManager** - Reads the full screen state: every app, window, and element. Uses semantic depth to tunnel through empty CSS wrapper divs and reach content 30+ levels deep in web apps.
-- **ActionExecutor** - Tries AX-native methods first (`performAction(.press)`, `setValue`), verifies they worked, falls back to synthetic input (mouse/keyboard events). Every action returns a result with post-action context.
-- **SmartResolver** - Fuzzy element matching. `ghost click "Compose"` finds the best match by Levenshtein distance, scores content-tree matches higher than menu items.
-- **RecipeEngine** - Multi-step workflow execution with parameter substitution, wait conditions, failure detection, and automatic focus restore.
-- **MCPServer** - Model Context Protocol over stdin/stdout. Auto-detects NDJSON (Claude Desktop) vs Content-Length framing. 27 tools mapped to the full Ghost OS API.
-
-## Permissions
-
-### Accessibility (required)
-
-Ghost OS reads the accessibility tree. macOS requires explicit permission for this.
-
-Go to: **System Settings > Privacy & Security > Accessibility** and add your terminal app (iTerm2, Terminal, Warp, VS Code, etc.).
-
-When running through MCP, the permission attaches to the MCP client. If you use Claude Code, add the terminal app that runs Claude Code. If you use Claude Desktop, add Claude Desktop itself.
-
-### Screen Recording (optional)
-
-Only needed for `ghost screenshot`. Useful for visual debugging when the accessibility tree doesn't tell the whole story.
-
-Go to: **System Settings > Privacy & Security > Screen Recording** and add your terminal app.
+</details>
 
 ## Things to Know
 
-These are real issues we hit during development. Not hypothetical edge cases.
+Real issues from development. Not hypothetical.
 
-**Chrome tabs are invisible.** Chromium doesn't expose tabs through the accessibility API. You can't list tabs or find a specific tab. Navigate by URL instead: `ghost hotkey cmd,l` then `ghost type "google.com"` then `ghost press return`.
+- **Chrome tabs are invisible.** Chromium doesn't expose tabs in the accessibility tree. Navigate by URL: `cmd,l` then type the URL.
+- **Web apps work from background, native apps need focus.** Chrome and Slack are readable without bringing them forward. Native macOS apps (Preview, GitHub Desktop) only show their menu bar until you focus them.
+- **Gmail autocomplete needs Enter.** After typing a recipient, press Enter to confirm. Otherwise the address won't stick.
+- **Always run `ghost setup` first.** Permission dialogs during an agent session will break the workflow.
 
-**Web apps work from background. Native apps need focus.** Chrome, Slack, and other Electron/web apps are fully readable without bringing them to the foreground. Native macOS apps (GitHub Desktop, Preview, Claude) only expose their menu bar from background. Call `ghost focus <app>` before reading native apps.
+## Platform Support
 
-**AX-native actions work on native apps, not Chrome.** `performAction(.press)` works on Messages buttons but silently fails on Chrome web content. Ghost OS detects this through verify-and-retry: it checks whether the context changed after the action, and falls back to synthetic click if nothing happened.
+Ghost OS is macOS-only today. The accessibility tree approach works on every OS:
+- **macOS:** Accessibility Framework (AXUIElement) - what Ghost OS uses now
+- **Windows:** UI Automation (UIA)
+- **Linux:** AT-SPI (Assistive Technology Service Provider Interface)
 
-**Gmail autocomplete needs Enter.** After typing an email address in Gmail's To field, press Enter to confirm the autocomplete suggestion before moving to the next field.
+Cross-platform support is on the roadmap. The architecture is designed for it. The perception layer, action layer, and recipe system are all platform-independent. Only the OS-specific accessibility bindings need to change.
 
-**Modifier keys are automatically cleared.** After every hotkey command, Ghost OS sends a CGEvent to clear stuck modifier keys. Without this, typing after `cmd,l` would produce Cmd+character shortcuts instead of plain text.
+## Contributing
 
-**Permission dialog breaks agent workflows.** If Accessibility permission isn't granted before the agent starts, macOS shows a dialog that steals focus and confuses the agent. Always run `ghost setup` first.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on:
+- Setting up the development environment
+- How to submit pull requests
+- Code conventions and architecture overview
+- Testing your changes
 
 ## Architecture
+
+Built on [AXorcist](https://github.com/steipete/AXorcist) (MIT), a Swift accessibility library by Peter Steinberger.
 
 ```
 ghost-os/
   Sources/
-    GhostOS/                    (library, ~6500 lines)
-      State/                    ScreenState, StateManager, ElementNode, ScreenCapture
-      Actions/                  ActionExecutor, SmartResolver
-      Recipes/                  RecipeTypes, RecipeStore, RecordingManager, RecipeEngine
-      Protocol/                 RPCMessage, RPCHandler (33 RPC methods)
-      MCP/                      MCPServer (27 MCP tools)
-      Observer/                 SystemObserver (AX notifications)
-      Daemon/                   GhostDaemon, IPCServer
-    ghost/                      (CLI, ~1400 lines)
-      main.swift                28 commands
-      SetupWizard.swift         Interactive setup
+    GhostOS/                        Library (~6500 lines)
+      State/                        ScreenState, StateManager, ElementNode, ScreenCapture
+      Actions/                      ActionExecutor (AX-native first), SmartResolver (fuzzy matching)
+      Recipes/                      RecipeEngine, RecipeStore, RecordingManager
+      Protocol/                     RPCHandler (33 methods), RPCMessage
+      MCP/                          MCPServer (27 tools, NDJSON + Content-Length)
+      Observer/                     SystemObserver (AX notifications)
+      Daemon/                       GhostDaemon, IPCServer (Unix socket)
+    ghost/                          CLI (~1500 lines)
+      main.swift                    28 commands
+      SetupWizard.swift             Interactive setup
 ```
 
-The MCP agent instruction document is at [GHOST-MCP.md](GHOST-MCP.md). It's served to the AI agent on MCP initialization and covers focus rules, workflow patterns, Chrome/Gmail knowledge, and recipe usage.
+The MCP instruction document ([GHOST-MCP.md](GHOST-MCP.md)) is served to Claude Code on connection. It teaches the agent how to use Ghost OS: focus management, workflow patterns, recipe-first approach, platform-specific knowledge.
 
 ## License
 
 MIT. See [LICENSE](LICENSE).
-
-Built on [AXorcist](https://github.com/steipete/AXorcist) by Peter Steinberger (MIT).
