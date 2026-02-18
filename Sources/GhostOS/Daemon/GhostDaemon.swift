@@ -293,6 +293,15 @@ public final class GhostDaemon {
         return actionExecutor.wait(condition: condition, value: value, timeout: timeout, interval: interval, appName: app)
     }
 
+    /// Capture a screenshot of a window (async — uses ScreenCaptureKit)
+    public func screenshot(app: String, windowTitle: String? = nil) async -> ScreenshotResult? {
+        stateManager.refresh()
+        guard let appInfo = stateManager.getState().apps.first(where: {
+            $0.name.localizedCaseInsensitiveContains(app)
+        }) else { return nil }
+        return await ScreenCapture.captureWindow(pid: appInfo.pid, windowTitle: windowTitle)
+    }
+
     /// Check accessibility permissions
     public func checkPermissions() -> Bool {
         let status = getPermissionsStatus()

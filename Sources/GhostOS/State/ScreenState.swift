@@ -264,6 +264,24 @@ public struct ContentItem: Codable, Sendable {
     }
 }
 
+// MARK: - Screenshot
+
+/// Result of a window screenshot capture.
+/// Used for autonomous debugging: when AX fails, the agent sends this to a vision model.
+public struct ScreenshotResult: Codable, Sendable {
+    public let base64PNG: String     // Base64-encoded PNG image data
+    public let width: Int            // Image width in pixels
+    public let height: Int           // Image height in pixels
+    public let windowTitle: String?  // Title of captured window
+
+    public init(base64PNG: String, width: Int, height: Int, windowTitle: String?) {
+        self.base64PNG = base64PNG
+        self.width = width
+        self.height = height
+        self.windowTitle = windowTitle
+    }
+}
+
 // MARK: - State Diffing
 
 /// Represents changes between two screen states

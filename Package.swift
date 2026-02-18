@@ -27,7 +27,8 @@ let package = Package(
                 .product(name: "AXorcist", package: "AXorcist"),
             ],
             path: "Sources/GhostOS",
-            swiftSettings: concurrencySettings
+            swiftSettings: concurrencySettings,
+            linkerSettings: [.linkedFramework("ScreenCaptureKit")]
         ),
         .executableTarget(
             name: "ghost",

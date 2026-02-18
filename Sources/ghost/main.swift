@@ -60,6 +60,8 @@ func main() async {
         await handleWait(subArgs)
     case "scroll":
         await handleScroll(subArgs)
+    case "screenshot":
+        await handleScreenshot(subArgs)
     case "diff":
         await handleDiff(subArgs)
     case "watch":
@@ -519,6 +521,101 @@ func handleWait(_ args: [String]) async {
 }
 
 @MainActor
+func handleScreenshot(_ args: [String]) async {
+    // ghost screenshot --app Chrome [--output /path/to/file.png] [--base64]
+    let appName = flagValue(args, flag: "--app")
+    let outputPath = flagValue(args, flag: "--output")
+    let printBase64 = args.contains("--base64")
+    let windowTitle = flagValue(args, flag: "--window")
+
+    guard let appName = appName else {
+        print("""
+        Usage: ghost screenshot --app <name> [options]
+
+        Options:
+          --app <name>         App to screenshot (required)
+          --window <title>     Match specific window title
+          --output <path>      Save PNG to file (default: /tmp/ghost-screenshot.png)
+          --base64             Print base64-encoded PNG to stdout
+
+        Examples:
+          ghost screenshot --app Chrome
+          ghost screenshot --app Chrome --output ~/Desktop/debug.png
+          ghost screenshot --app Chrome --base64
+        """)
+        return
+    }
+
+    // Try daemon first
+    if let response = trySendToDaemon(
+        method: "screenshot",
+        params: RPCParams(target: windowTitle, app: appName)
+    ) {
+        if let error = response.error {
+            print("Error: \(error.message)")
+            exit(1)
+        }
+        if case let .screenshot(result) = response.result {
+            outputScreenshot(result, outputPath: outputPath, printBase64: printBase64)
+        } else {
+            printResult(response)
+        }
+        return
+    }
+
+    // Direct mode
+    let daemon = directDaemon()
+
+    // Check if app exists before trying screenshot
+    let state = daemon.getState()
+    guard state.apps.contains(where: { $0.name.localizedCaseInsensitiveContains(appName) }) else {
+        print("Error: App '\(appName)' not found")
+        let appNames = state.apps.map(\.name).joined(separator: ", ")
+        print("Running apps: \(appNames)")
+        exit(1)
+    }
+
+    guard let result = await daemon.screenshot(app: appName, windowTitle: windowTitle) else {
+        print("Screenshot failed.")
+        print("Possible causes:")
+        print("  - Screen Recording permission not granted")
+        print("  - No visible window for this app")
+        print("Check: System Settings > Privacy & Security > Screen Recording")
+        exit(1)
+    }
+    outputScreenshot(result, outputPath: outputPath, printBase64: printBase64)
+}
+
+/// Handle screenshot output: save to file or print base64
+func outputScreenshot(_ result: ScreenshotResult, outputPath: String?, printBase64: Bool) {
+    if printBase64 {
+        // Raw base64 for piping to other tools / sending to vision models
+        print(result.base64PNG)
+        return
+    }
+
+    // Save to file
+    let path = outputPath ?? "/tmp/ghost-screenshot.png"
+    guard let data = Data(base64Encoded: result.base64PNG) else {
+        print("Error: Failed to decode screenshot data")
+        exit(1)
+    }
+    do {
+        try data.write(to: URL(fileURLWithPath: path))
+    } catch {
+        print("Error: Failed to write screenshot: \(error)")
+        exit(1)
+    }
+
+    let sizeKB = data.count / 1024
+    print("Screenshot saved: \(path)")
+    print("  \(result.width)x\(result.height) PNG (\(sizeKB)KB)")
+    if let title = result.windowTitle {
+        print("  Window: \(title)")
+    }
+}
+
+@MainActor
 func handleFocus(_ args: [String]) async {
     guard let appName = args.first else {
         print("Usage: ghost focus <app name>")
@@ -826,6 +923,8 @@ func printResult(_ response: RPCResponse) {
         printActionResult(result)
     case .context(let ctx):
         print(ctx.summary())
+    case .screenshot(let result):
+        outputScreenshot(result, outputPath: nil, printBase64: false)
     case .app(let app):
         printJSON(app)
     }
@@ -866,6 +965,8 @@ func printUsage() {
                     elementGone, urlChanged, titleChanged
         Options: --timeout <s> (default 10) --interval <s> (default 0.5)
       ghost scroll [up|down]      Scroll (default: down)
+      ghost screenshot --app <name>  Capture window as PNG (for vision model debugging)
+        Options: --output <path>, --window <title>, --base64
       ghost focus <app>           Bring app to foreground
       ghost diff                  Show what changed since last state check
       ghost watch                 Live monitor — shows changes in real-time
@@ -888,6 +989,8 @@ func printUsage() {
       ghost wait urlContains "amazon.com" --timeout 15 --app Chrome
       ghost wait elementExists "Add to Cart" --timeout 10 --app Chrome
       ghost wait titleChanged --timeout 5 --app Chrome
+      ghost screenshot --app Chrome
+      ghost screenshot --app Chrome --output ~/Desktop/debug.png
       ghost watch --interval 2
       ghost describe --app "System Settings"
 

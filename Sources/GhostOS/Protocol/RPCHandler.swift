@@ -82,6 +82,8 @@ public final class RPCHandler {
             return handleRefresh(id: id)
         case "wait":
             return handleWait(params: params, id: id)
+        case "screenshot":
+            return handleScreenshot(params: params, id: id)
         case "ping":
             return .success(.message("pong"), id: id)
         default:
@@ -329,5 +331,44 @@ public final class RPCHandler {
             appName: params?.app
         )
         return .success(.actionResult(result), id: id)
+    }
+
+    private func handleScreenshot(params: RPCParams?, id: Int) -> RPCResponse {
+        guard let appName = params?.app else {
+            return .failure(.invalidParams("'app' required for screenshot"), id: id)
+        }
+        stateManager.refresh()
+        guard let appInfo = stateManager.getState().apps.first(where: {
+            $0.name.localizedCaseInsensitiveContains(appName)
+        }) else {
+            return .failure(.notFound("App '\(appName)' not found"), id: id)
+        }
+
+        let pid = appInfo.pid
+        let windowTitle = params?.target
+
+        // Bridge async ScreenCaptureKit to sync RPC dispatch.
+        // We're on MainActor — spin the RunLoop to allow the async Task to make progress.
+        // This avoids deadlocks because RunLoop.main processes Task continuations.
+        var screenshotResult: ScreenshotResult?
+        var completed = false
+
+        Task {
+            screenshotResult = await ScreenCapture.captureWindow(
+                pid: pid, windowTitle: windowTitle
+            )
+            completed = true
+        }
+
+        while !completed {
+            RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.01))
+        }
+
+        guard let screenshot = screenshotResult else {
+            return .failure(.internalError(
+                "Screenshot failed (check Screen Recording permission in System Settings > Privacy & Security > Screen Recording)"
+            ), id: id)
+        }
+        return .success(.screenshot(screenshot), id: id)
     }
 }
