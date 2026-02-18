@@ -124,34 +124,41 @@ Grant these **before** running `ghost setup`. If you skip this step, macOS will 
 
 ### What `ghost setup` does
 
+Run this from the directory where you'll use Claude Code:
+
 ```bash
+cd your-project
 ghost setup
 ```
 
 1. Checks that Accessibility permission is granted
 2. Checks Screen Recording permission (optional)
 3. Detects Claude Code and registers Ghost OS as an MCP server
-4. Runs a verification test to confirm everything works
+4. Allows all Ghost OS tools without approval prompts (writes `.claude/settings.local.json`)
+5. Runs a verification test to confirm everything works
 
-### Manual Claude Code setup
+Start a new Claude Code session after setup. Your agent can now see your screen.
 
-If `ghost setup` can't auto-configure Claude Code (or you prefer to do it yourself):
+### Manual setup
+
+If `ghost setup` can't auto-configure (or you prefer to do it yourself):
 
 ```bash
-claude mcp add --transport stdio ghost-os -- ghost mcp
-```
+# Add Ghost OS as an MCP server
+claude mcp add --transport stdio ghost-os -- /opt/homebrew/bin/ghost mcp
 
-Then allow all Ghost OS tools without approval prompts. Add to your project's `.claude/settings.local.json`:
-
-```json
+# Allow Ghost OS tools without approval prompts (run from your project directory)
+mkdir -p .claude
+cat > .claude/settings.local.json << 'EOF'
 {
   "permissions": {
     "allow": ["mcp__ghost-os__*"]
   }
 }
+EOF
 ```
 
-Start a new Claude Code session after setup. Your agent can now see your screen.
+Use the full path to the `ghost` binary (`/opt/homebrew/bin/ghost` for Homebrew installs, or `which ghost` to find it).
 
 ## CLI
 

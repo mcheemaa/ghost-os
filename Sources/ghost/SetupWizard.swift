@@ -182,38 +182,78 @@ struct SetupWizard {
         // Check if already configured
         if isGhostOSConfiguredInClaudeCode() {
             print("  Ghost OS is already configured as an MCP server.")
+        } else {
+            print("  Adding Ghost OS as MCP server...")
+            let result = runProcess(
+                "/usr/bin/env",
+                args: ["claude", "mcp", "add", "--transport", "stdio", "ghost-os", "--", binaryPath, "mcp"],
+                env: ["CLAUDECODE": ""],  // Unset to avoid nested session error
+                timeout: 15
+            )
+
+            if result.exitCode == 0 {
+                print("  Done.")
+            } else if result.stderr == "timed out" {
+                print("  Claude CLI did not respond (it may need login or first-run setup).")
+                print("")
+                print("  After setting up Claude Code, run this command:")
+                print("    \(mcpCommand)")
+            } else {
+                print("  Auto-configure failed.")
+                print("")
+                print("  Run this command to add Ghost OS to Claude Code:")
+                print("    \(mcpCommand)")
+            }
+        }
+
+        // Configure permissions to allow Ghost OS tools without prompts
+        print("")
+        configurePermissions()
+    }
+
+    private func configurePermissions() {
+        let settingsPath = FileManager.default.currentDirectoryPath + "/.claude/settings.local.json"
+        let allowRule = "mcp__ghost-os__*"
+
+        // Read existing settings
+        var settings: [String: Any] = [:]
+        if let data = try? Data(contentsOf: URL(fileURLWithPath: settingsPath)),
+           let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            settings = parsed
+        }
+
+        // Check if already configured
+        if let permissions = settings["permissions"] as? [String: Any],
+           let allow = permissions["allow"] as? [String],
+           allow.contains(allowRule) {
+            print("  Ghost OS tools already allowed (no approval prompts).")
             print("")
             return
         }
 
-        print("  Adding Ghost OS as MCP server...")
-        let result = runProcess(
-            "/usr/bin/env",
-            args: ["claude", "mcp", "add", "--transport", "stdio", "ghost-os", "--", binaryPath, "mcp"],
-            env: ["CLAUDECODE": ""],  // Unset to avoid nested session error
-            timeout: 15
-        )
+        // Add the allow rule
+        var permissions = (settings["permissions"] as? [String: Any]) ?? [:]
+        var allow = (permissions["allow"] as? [String]) ?? []
+        allow.append(allowRule)
+        permissions["allow"] = allow
+        settings["permissions"] = permissions
 
-        if result.exitCode == 0 {
-            print("  Done.")
-        } else if result.stderr == "timed out" {
-            print("  Claude CLI did not respond (it may need login or first-run setup).")
+        // Write settings
+        do {
+            let dir = (settingsPath as NSString).deletingLastPathComponent
+            try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+            let data = try JSONSerialization.data(withJSONObject: settings, options: [.prettyPrinted, .sortedKeys])
+            try data.write(to: URL(fileURLWithPath: settingsPath))
+            print("  Allowed Ghost OS tools without approval prompts.")
+            print("  Updated: \(settingsPath)")
+        } catch {
+            print("  Could not update settings automatically.")
+            print("  Add this to \(settingsPath):")
             print("")
-            print("  After setting up Claude Code, run this command:")
-            print("    \(mcpCommand)")
-        } else {
-            print("  Auto-configure failed.")
-            print("")
-            print("  Run this command to add Ghost OS to Claude Code:")
-            print("    \(mcpCommand)")
+            print("    \"permissions\": {")
+            print("      \"allow\": [\"mcp__ghost-os__*\"]")
+            print("    }")
         }
-        print("")
-        print("  To allow all Ghost OS tools without approval prompts, add this")
-        print("  to your project's .claude/settings.local.json:")
-        print("")
-        print("    \"permissions\": {")
-        print("      \"allow\": [\"mcp__ghost-os__*\"]")
-        print("    }")
         print("")
     }
 
@@ -295,10 +335,21 @@ struct SetupWizard {
 
     private func resolveBinaryPath() -> String {
         let arg0 = CommandLine.arguments[0]
+        // Already absolute
         if arg0.hasPrefix("/") {
             return arg0
         }
-        // Relative path - resolve against cwd
+        // Contains path separator - resolve against cwd
+        if arg0.contains("/") {
+            let cwd = FileManager.default.currentDirectoryPath
+            return (cwd as NSString).appendingPathComponent(arg0)
+        }
+        // Bare command name (e.g. "ghost") - resolve via PATH using `which`
+        let result = runProcess("/usr/bin/which", args: [arg0])
+        if result.exitCode == 0 && !result.stdout.isEmpty {
+            return result.stdout
+        }
+        // Fallback to cwd
         let cwd = FileManager.default.currentDirectoryPath
         return (cwd as NSString).appendingPathComponent(arg0)
     }
