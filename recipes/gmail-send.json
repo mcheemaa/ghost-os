@@ -69,7 +69,7 @@
     {
       "id": 7,
       "action": "hotkey",
-      "params": {"keys": "cmd,return"},
+      "params": {"keys": "cmd,return", "app": "Chrome"},
       "wait_after": {
         "condition": "urlContains",
         "value": "#inbox",
