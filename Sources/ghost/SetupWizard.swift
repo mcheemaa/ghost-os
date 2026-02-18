@@ -272,7 +272,8 @@ struct SetupWizard {
         try? FileManager.default.createDirectory(atPath: recipesDir, withIntermediateDirectories: true)
 
         let recipes: [(String, String)] = [
-            ("gmail-send", gmailSendRecipe)
+            ("gmail-send", gmailSendRecipe),
+            ("arxiv-search", arxivSearchRecipe)
         ]
 
         var installed = 0
@@ -342,6 +343,50 @@ struct SetupWizard {
           "id": 7, "action": "hotkey", "note": "Send email",
           "params": {"keys": "cmd,return", "app": "Chrome"},
           "wait_after": {"condition": "urlContains", "value": "#inbox", "timeout": 10}
+        }
+      ]
+    }
+    """
+
+    // Default recipe: arxiv-search
+    private let arxivSearchRecipe = """
+    {
+      "schema_version": 1,
+      "name": "arxiv-search",
+      "description": "Search arXiv for academic papers by topic",
+      "app": "Chrome",
+      "params": {
+        "query": {"type": "string", "description": "Search terms (e.g. 'large language model agents')", "required": true}
+      },
+      "steps": [
+        {
+          "id": 1, "action": "focus", "note": "Bring Chrome to front",
+          "params": {"app": "Chrome"}
+        },
+        {
+          "id": 2, "action": "hotkey", "note": "Select address bar",
+          "params": {"keys": "cmd,l", "app": "Chrome"},
+          "delay_ms": 300
+        },
+        {
+          "id": 3, "action": "type", "note": "Navigate to arXiv search",
+          "params": {"text": "arxiv.org/search/", "app": "Chrome"},
+          "delay_ms": 200
+        },
+        {
+          "id": 4, "action": "press", "note": "Go to search page",
+          "params": {"key": "return", "app": "Chrome"},
+          "wait_after": {"condition": "urlContains", "value": "arxiv.org/search", "timeout": 10, "app": "Chrome"}
+        },
+        {
+          "id": 5, "action": "type", "note": "Enter search query",
+          "params": {"text": "{{query}}", "target": "Search term or terms", "app": "Chrome"},
+          "delay_ms": 300
+        },
+        {
+          "id": 6, "action": "click", "note": "Submit search",
+          "params": {"target": "Search", "app": "Chrome"},
+          "wait_after": {"condition": "urlContains", "value": "query=", "timeout": 10, "app": "Chrome"}
         }
       ]
     }

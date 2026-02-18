@@ -1262,7 +1262,7 @@ func printRecipeList(_ recipes: [RecipeSummary]) {
 }
 
 func printVersion() {
-    print("Ghost OS 0.1.3")
+    print("Ghost OS 0.1.4")
 }
 
 func printUsage() {
