@@ -135,7 +135,8 @@ ghost setup
 2. Checks Screen Recording permission (optional)
 3. Detects Claude Code and registers Ghost OS as an MCP server
 4. Allows all Ghost OS tools without approval prompts (writes `.claude/settings.local.json`)
-5. Runs a verification test to confirm everything works
+5. Installs default recipes (gmail-send, etc.)
+6. Runs a verification test to confirm everything works
 
 Start a new Claude Code session after setup. Your agent can now see your screen.
 

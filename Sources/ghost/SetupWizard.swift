@@ -27,7 +27,10 @@ struct SetupWizard {
         // Step 3: MCP configuration
         configureMCP()
 
-        // Step 4: Verification
+        // Step 4: Default recipes
+        installDefaultRecipes()
+
+        // Step 5: Verification
         let verified = verify()
 
         // Summary
@@ -258,10 +261,96 @@ struct SetupWizard {
     }
 
 
-    // MARK: - Step 4: Verification
+    // MARK: - Step 4: Default Recipes
+
+    private func installDefaultRecipes() {
+        printStep(4, "Default Recipes")
+
+        let recipesDir = FileManager.default.homeDirectoryForCurrentUser.path + "/.ghost-os/recipes"
+
+        // Create recipes directory
+        try? FileManager.default.createDirectory(atPath: recipesDir, withIntermediateDirectories: true)
+
+        let recipes: [(String, String)] = [
+            ("gmail-send", gmailSendRecipe)
+        ]
+
+        var installed = 0
+        for (name, json) in recipes {
+            let path = recipesDir + "/" + name + ".json"
+            if FileManager.default.fileExists(atPath: path) {
+                print("  \(name) - already exists")
+                installed += 1
+                continue
+            }
+            do {
+                try json.write(toFile: path, atomically: true, encoding: .utf8)
+                print("  \(name) - installed")
+                installed += 1
+            } catch {
+                print("  \(name) - failed to install")
+            }
+        }
+
+        printStatus("\(installed) recipe(s) ready", ok: true)
+        print("")
+    }
+
+    // Default recipe: gmail-send
+    private let gmailSendRecipe = """
+    {
+      "schema_version": 1,
+      "name": "gmail-send",
+      "description": "Send an email via Gmail in Chrome",
+      "app": "Chrome",
+      "params": {
+        "recipient": {"type": "string", "description": "Email address to send to", "required": true},
+        "subject": {"type": "string", "description": "Email subject line", "required": true},
+        "body": {"type": "string", "description": "Email body text", "required": true}
+      },
+      "steps": [
+        {
+          "id": 1, "action": "focus", "note": "Bring Gmail to front",
+          "params": {"app": "Chrome"}
+        },
+        {
+          "id": 2, "action": "click", "note": "Open compose window",
+          "params": {"target": "Compose", "app": "Chrome"},
+          "wait_after": {"condition": "elementExists", "value": "To recipients", "timeout": 5}
+        },
+        {
+          "id": 3, "action": "type", "note": "Type recipient email",
+          "params": {"text": "{{recipient}}", "target": "To", "app": "Chrome"},
+          "delay_ms": 500
+        },
+        {
+          "id": 4, "action": "press", "note": "Confirm autocomplete",
+          "params": {"key": "return"},
+          "delay_ms": 500
+        },
+        {
+          "id": 5, "action": "type", "note": "Type subject line",
+          "params": {"text": "{{subject}}", "target": "Subject", "app": "Chrome"},
+          "delay_ms": 300
+        },
+        {
+          "id": 6, "action": "type", "note": "Type email body",
+          "params": {"text": "{{body}}", "target": "Message Body", "app": "Chrome"},
+          "delay_ms": 300
+        },
+        {
+          "id": 7, "action": "hotkey", "note": "Send email",
+          "params": {"keys": "cmd,return", "app": "Chrome"},
+          "wait_after": {"condition": "urlContains", "value": "#inbox", "timeout": 10}
+        }
+      ]
+    }
+    """
+
+    // MARK: - Step 5: Verification
 
     private func verify() -> Bool {
-        printStep(4, "Verification")
+        printStep(5, "Verification")
 
         let sm = StateManager()
         sm.refresh()
@@ -435,7 +524,7 @@ struct SetupWizard {
     }
 
     private func printStep(_ number: Int, _ title: String) {
-        print("  Step \(number)/4: \(title)")
+        print("  Step \(number)/5: \(title)")
         print("  " + String(repeating: "-", count: title.count + 10))
     }
 
