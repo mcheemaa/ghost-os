@@ -245,6 +245,7 @@ public final class ActionExecutor {
     public func hotkeyWithContext(keys: [String], appName: String? = nil) -> ActionResult {
         do {
             try InputDriver.hotkey(keys: keys)
+            clearModifierFlags()
             usleep(200_000)
             stateManager.refresh()
             return ActionResult(
@@ -306,6 +307,7 @@ public final class ActionExecutor {
     /// Perform a keyboard shortcut (legacy)
     public func hotkey(keys: [String]) throws -> String {
         try InputDriver.hotkey(keys: keys)
+        clearModifierFlags()
         return "Hotkey \(keys.joined(separator: "+"))"
     }
 
@@ -395,6 +397,24 @@ public final class ActionExecutor {
         if pre.interactiveElements.count != post.interactiveElements.count { return true }
 
         return false
+    }
+
+    /// Clear any stuck modifier keys (Cmd, Shift, Option, Ctrl) after a hotkey.
+    ///
+    /// AXorcist's performHotkey sets modifier flags on keyDown/keyUp events but never
+    /// sends explicit modifier keyUp events. This can leave the system thinking Cmd (or
+    /// other modifiers) is still held, causing subsequent keystrokes to be interpreted
+    /// as Cmd+key shortcuts (e.g. typing 'a' becomes Cmd+A).
+    ///
+    /// Fix: post a flagsChanged CGEvent with empty flags to clear the modifier state.
+    private func clearModifierFlags() {
+        // Post flagsChanged with no modifiers to tell the system all modifiers are released
+        if let flagsEvent = CGEvent(source: nil) {
+            flagsEvent.type = .flagsChanged
+            flagsEvent.flags = []
+            flagsEvent.post(tap: .cghidEventTap)
+        }
+        usleep(10_000) // 10ms for the event to propagate
     }
 
     /// Auto-focus an app with a brief delay for it to come to front
