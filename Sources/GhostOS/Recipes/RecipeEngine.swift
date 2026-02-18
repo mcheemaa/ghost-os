@@ -72,7 +72,18 @@ public final class RecipeEngine {
         rpcHandler.recordingManager.isSuppressed = true
         defer { rpcHandler.recordingManager.isSuppressed = false }
 
-        // 4. Execute steps in sequence
+        // 4. Capture frontmost app to restore focus after recipe completes.
+        // Recipes switch focus to target apps — this ensures the caller's app
+        // (typically the terminal) gets focus back when the recipe finishes.
+        stateManager.refresh()
+        let callingApp = stateManager.getState().frontmostApp?.name
+        defer {
+            if let callingApp = callingApp {
+                _ = try? actionExecutor.focus(appName: callingApp)
+            }
+        }
+
+        // 5. Execute steps in sequence
         for step in recipe.steps {
             let stepStart = Date()
 
