@@ -105,6 +105,9 @@ public enum RPCResult: Codable, Sendable {
     case context(ContextInfo)
     case actionResult(ActionResult)
     case screenshot(ScreenshotResult)
+    case runResult(RunResult)
+    case recipeList([RecipeSummary])
+    case recipe(Recipe)
     case message(String)
     case bool(Bool)
 
@@ -143,6 +146,15 @@ public enum RPCResult: Codable, Sendable {
         case let .screenshot(result):
             try container.encode("screenshot", forKey: .type)
             try container.encode(result, forKey: .data)
+        case let .runResult(result):
+            try container.encode("runResult", forKey: .type)
+            try container.encode(result, forKey: .data)
+        case let .recipeList(list):
+            try container.encode("recipeList", forKey: .type)
+            try container.encode(list, forKey: .data)
+        case let .recipe(recipe):
+            try container.encode("recipe", forKey: .type)
+            try container.encode(recipe, forKey: .data)
         case let .message(msg):
             try container.encode("message", forKey: .type)
             try container.encode(msg, forKey: .data)
@@ -174,6 +186,12 @@ public enum RPCResult: Codable, Sendable {
             self = .actionResult(try container.decode(ActionResult.self, forKey: .data))
         case "screenshot":
             self = .screenshot(try container.decode(ScreenshotResult.self, forKey: .data))
+        case "runResult":
+            self = .runResult(try container.decode(RunResult.self, forKey: .data))
+        case "recipeList":
+            self = .recipeList(try container.decode([RecipeSummary].self, forKey: .data))
+        case "recipe":
+            self = .recipe(try container.decode(Recipe.self, forKey: .data))
         case "message":
             self = .message(try container.decode(String.self, forKey: .data))
         case "bool":

@@ -1,0 +1,81 @@
+{
+  "schema_version": 1,
+  "name": "gmail-send",
+  "description": "Send an email via Gmail in Chrome",
+  "app": "Chrome",
+  "params": {
+    "recipient": {
+      "type": "string",
+      "description": "Email address to send to",
+      "required": true
+    },
+    "subject": {
+      "type": "string",
+      "description": "Email subject line",
+      "required": true
+    },
+    "body": {
+      "type": "string",
+      "description": "Email body text",
+      "required": true
+    }
+  },
+  "steps": [
+    {
+      "id": 1,
+      "action": "focus",
+      "params": {"app": "Chrome"},
+      "note": "Bring Gmail to front"
+    },
+    {
+      "id": 2,
+      "action": "click",
+      "params": {"target": "Compose", "app": "Chrome"},
+      "wait_after": {
+        "condition": "elementExists",
+        "value": "To recipients",
+        "timeout": 5
+      },
+      "note": "Open compose window, wait for To field to appear"
+    },
+    {
+      "id": 3,
+      "action": "type",
+      "params": {"text": "{{recipient}}", "target": "To", "app": "Chrome"},
+      "delay_ms": 500,
+      "note": "Type recipient email, wait for autocomplete dropdown"
+    },
+    {
+      "id": 4,
+      "action": "press",
+      "params": {"key": "return"},
+      "delay_ms": 500,
+      "note": "Confirm autocomplete suggestion, wait for field to settle"
+    },
+    {
+      "id": 5,
+      "action": "type",
+      "params": {"text": "{{subject}}", "target": "Subject", "app": "Chrome"},
+      "delay_ms": 300,
+      "note": "Type subject line via AX setValue"
+    },
+    {
+      "id": 6,
+      "action": "type",
+      "params": {"text": "{{body}}", "target": "Message Body", "app": "Chrome"},
+      "delay_ms": 300,
+      "note": "Type email body via AX setValue"
+    },
+    {
+      "id": 7,
+      "action": "hotkey",
+      "params": {"keys": "cmd,return"},
+      "wait_after": {
+        "condition": "urlContains",
+        "value": "#inbox",
+        "timeout": 10
+      },
+      "note": "Send email, wait for compose to close and return to inbox"
+    }
+  ]
+}

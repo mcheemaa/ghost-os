@@ -8,10 +8,14 @@ import Foundation
 public final class RPCHandler {
     private let stateManager: StateManager
     private let actionExecutor: ActionExecutor
+    public let recordingManager = RecordingManager()
+    private var recipeEngine: RecipeEngine?
 
     public init(stateManager: StateManager, actionExecutor: ActionExecutor) {
         self.stateManager = stateManager
         self.actionExecutor = actionExecutor
+        // RecipeEngine needs self (RPCHandler), so we set it up after init
+        self.recipeEngine = RecipeEngine(rpcHandler: self, stateManager: stateManager)
     }
 
     /// Process a raw JSON request string and return a JSON response string
@@ -34,8 +38,17 @@ public final class RPCHandler {
         }
     }
 
-    /// Dispatch a parsed request to the appropriate handler
+    /// Dispatch a parsed request to the appropriate handler.
+    /// Recording hook: every dispatch is logged when recording is active.
     public func dispatch(_ request: RPCRequest) -> RPCResponse {
+        let response = dispatchInternal(request)
+        // One hook captures all routes — RecordingManager filters out meta-commands internally
+        recordingManager.log(method: request.method, params: request.params, response: response)
+        return response
+    }
+
+    /// Internal dispatch — the actual routing logic.
+    private func dispatchInternal(_ request: RPCRequest) -> RPCResponse {
         let params = request.params
         let id = request.id
 
@@ -84,6 +97,30 @@ public final class RPCHandler {
             return handleWait(params: params, id: id)
         case "screenshot":
             return handleScreenshot(params: params, id: id)
+        // Recording
+        case "recordStart":
+            return handleRecordStart(params: params, id: id)
+        case "recordStop":
+            return handleRecordStop(id: id)
+        case "recordStatus":
+            return handleRecordStatus(id: id)
+        // Recipe execution
+        case "run":
+            return handleRun(params: params, id: id)
+        // Recipe management
+        case "recipeList":
+            return handleRecipeList(id: id)
+        case "recipeShow":
+            return handleRecipeShow(params: params, id: id)
+        case "recipeSave":
+            return handleRecipeSave(params: params, id: id)
+        case "recipeDelete":
+            return handleRecipeDelete(params: params, id: id)
+        // Recording management
+        case "recordingList":
+            return handleRecordingList(id: id)
+        case "recordingShow":
+            return handleRecordingShow(params: params, id: id)
         case "ping":
             return .success(.message("pong"), id: id)
         default:
@@ -322,6 +359,136 @@ public final class RPCHandler {
         )
         return .success(.actionResult(result), id: id)
     }
+
+    // MARK: - Recording Handlers
+
+    private func handleRecordStart(params: RPCParams?, id: Int) -> RPCResponse {
+        guard let name = params?.value ?? params?.query ?? params?.target else {
+            return .failure(.invalidParams("'name' required for recordStart"), id: id)
+        }
+        if recordingManager.startRecording(name: name) {
+            return .success(.message("Recording started: \(name)"), id: id)
+        }
+        return .failure(.internalError("Already recording '\(recordingManager.currentSessionName ?? "?")'"), id: id)
+    }
+
+    private func handleRecordStop(id: Int) -> RPCResponse {
+        guard let recording = recordingManager.stopRecording() else {
+            return .failure(.internalError("Not recording"), id: id)
+        }
+        let msg = "Recording stopped: \(recording.name) (\(recording.steps.count) steps, \(String(format: "%.1f", recording.duration))s)"
+        return .success(.message(msg), id: id)
+    }
+
+    private func handleRecordStatus(id: Int) -> RPCResponse {
+        if let name = recordingManager.currentSessionName {
+            return .success(.message("Recording: \(name)"), id: id)
+        }
+        return .success(.message("Not recording"), id: id)
+    }
+
+    // MARK: - Recipe Execution Handler
+
+    private func handleRun(params: RPCParams?, id: Int) -> RPCResponse {
+        guard let engine = recipeEngine else {
+            return .failure(.internalError("Recipe engine not initialized"), id: id)
+        }
+
+        // Load recipe by name or path
+        let recipe: Recipe?
+        if let path = params?.query, path.contains("/") {
+            recipe = RecipeStore.loadRecipeFromPath(path)
+        } else if let name = params?.value ?? params?.query ?? params?.target {
+            recipe = RecipeStore.loadRecipe(name: name)
+        } else {
+            return .failure(.invalidParams("'recipe' name or path required"), id: id)
+        }
+
+        guard let recipe = recipe else {
+            return .failure(.notFound("Recipe not found"), id: id)
+        }
+
+        // Parse recipe params from the text field (JSON string)
+        var recipeParams: [String: String] = [:]
+        if let paramsJSON = params?.text {
+            if let data = paramsJSON.data(using: .utf8),
+               let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: String] {
+                recipeParams = parsed
+            }
+        }
+
+        let result = engine.run(recipe: recipe, params: recipeParams)
+        return .success(.runResult(result), id: id)
+    }
+
+    // MARK: - Recipe Management Handlers
+
+    private func handleRecipeList(id: Int) -> RPCResponse {
+        let recipes = RecipeStore.listRecipes()
+        return .success(.recipeList(recipes), id: id)
+    }
+
+    private func handleRecipeShow(params: RPCParams?, id: Int) -> RPCResponse {
+        guard let name = params?.value ?? params?.query ?? params?.target else {
+            return .failure(.invalidParams("'name' required"), id: id)
+        }
+        if let recipe = RecipeStore.loadRecipe(name: name) {
+            return .success(.recipe(recipe), id: id)
+        }
+        return .failure(.notFound("Recipe '\(name)' not found"), id: id)
+    }
+
+    private func handleRecipeSave(params: RPCParams?, id: Int) -> RPCResponse {
+        // Expect recipe JSON in the text field
+        guard let jsonStr = params?.text,
+              let data = jsonStr.data(using: .utf8) else {
+            return .failure(.invalidParams("Recipe JSON required in 'text' field"), id: id)
+        }
+        do {
+            let recipe = try JSONDecoder().decode(Recipe.self, from: data)
+            try RecipeStore.saveRecipe(recipe)
+            return .success(.message("Recipe saved: \(recipe.name)"), id: id)
+        } catch {
+            return .failure(.invalidParams("Invalid recipe JSON: \(error.localizedDescription)"), id: id)
+        }
+    }
+
+    private func handleRecipeDelete(params: RPCParams?, id: Int) -> RPCResponse {
+        guard let name = params?.value ?? params?.query ?? params?.target else {
+            return .failure(.invalidParams("'name' required"), id: id)
+        }
+        if RecipeStore.deleteRecipe(name: name) {
+            return .success(.message("Recipe deleted: \(name)"), id: id)
+        }
+        return .failure(.notFound("Recipe '\(name)' not found"), id: id)
+    }
+
+    // MARK: - Recording Management Handlers
+
+    private func handleRecordingList(id: Int) -> RPCResponse {
+        let recordings = RecipeStore.listRecordings()
+        if recordings.isEmpty {
+            return .success(.message("No recordings found"), id: id)
+        }
+        return .success(.message(recordings.joined(separator: "\n")), id: id)
+    }
+
+    private func handleRecordingShow(params: RPCParams?, id: Int) -> RPCResponse {
+        guard let name = params?.value ?? params?.query ?? params?.target else {
+            return .failure(.invalidParams("'name' required"), id: id)
+        }
+        if let recording = RecipeStore.loadRecording(name: name) {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            encoder.dateEncodingStrategy = .iso8601
+            if let data = try? encoder.encode(recording), let json = String(data: data, encoding: .utf8) {
+                return .success(.message(json), id: id)
+            }
+        }
+        return .failure(.notFound("Recording '\(name)' not found"), id: id)
+    }
+
+    // MARK: - Screenshot Handler
 
     private func handleScreenshot(params: RPCParams?, id: Int) -> RPCResponse {
         // Permission check first — fail fast with actionable message

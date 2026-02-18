@@ -62,6 +62,16 @@ func main() async {
         await handleScroll(subArgs)
     case "screenshot":
         await handleScreenshot(subArgs)
+    case "record":
+        await handleRecord(subArgs)
+    case "run":
+        await handleRun(subArgs)
+    case "recipes":
+        await handleRecipes(subArgs)
+    case "recipe":
+        await handleRecipe(subArgs)
+    case "recordings":
+        await handleRecordings(subArgs)
     case "diff":
         await handleDiff(subArgs)
     case "watch":
@@ -632,6 +642,225 @@ func outputScreenshot(_ result: ScreenshotResult, outputPath: String?, printBase
     }
 }
 
+// MARK: - Recording & Recipe Handlers
+
+@MainActor
+func handleRecord(_ args: [String]) async {
+    guard let subcommand = args.first else {
+        print("Usage: ghost record start <name> | stop | status")
+        return
+    }
+
+    switch subcommand {
+    case "start":
+        guard args.count > 1 else {
+            print("Usage: ghost record start <name>")
+            return
+        }
+        let name = args[1]
+        if let response = trySendToDaemon(method: "recordStart", params: RPCParams(value: name)) {
+            printResult(response)
+        } else {
+            let daemon = directDaemon()
+            let response = daemon.execute(action: "recordStart", params: RPCParams(value: name))
+            printResult(response)
+        }
+
+    case "stop":
+        if let response = trySendToDaemon(method: "recordStop") {
+            printResult(response)
+        } else {
+            let daemon = directDaemon()
+            let response = daemon.execute(action: "recordStop", params: RPCParams())
+            printResult(response)
+        }
+
+    case "status":
+        if let response = trySendToDaemon(method: "recordStatus") {
+            printResult(response)
+        } else {
+            let daemon = directDaemon()
+            let response = daemon.execute(action: "recordStatus", params: RPCParams())
+            printResult(response)
+        }
+
+    default:
+        print("Usage: ghost record start <name> | stop | status")
+    }
+}
+
+@MainActor
+func handleRun(_ args: [String]) async {
+    // ghost run <recipe-name> [--param key=value ...] [--params-json '{"key":"value"}']
+    // ghost run /path/to/recipe.json [--param key=value ...]
+    guard let recipeName = args.first(where: { !$0.hasPrefix("-") }) else {
+        print("Usage: ghost run <recipe-name> [--param key=value ...] [--params-json '{...}']")
+        return
+    }
+
+    // Collect params from --param key=value flags
+    var recipeParams: [String: String] = [:]
+
+    // Parse --params-json first (bulk params)
+    if let jsonStr = flagValue(args, flag: "--params-json") {
+        if let data = jsonStr.data(using: .utf8),
+           let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: String] {
+            recipeParams = parsed
+        } else {
+            print("Error: --params-json must be valid JSON object with string values")
+            exit(1)
+        }
+    }
+
+    // Parse individual --param key=value flags (override json params)
+    var i = 0
+    while i < args.count {
+        if args[i] == "--param" && i + 1 < args.count {
+            let pair = args[i + 1]
+            if let eqIdx = pair.firstIndex(of: "=") {
+                let key = String(pair[pair.startIndex..<eqIdx])
+                let value = String(pair[pair.index(after: eqIdx)...])
+                recipeParams[key] = value
+            }
+            i += 2
+        } else {
+            i += 1
+        }
+    }
+
+    // Build JSON string of params for RPC
+    let paramsJSON: String?
+    if recipeParams.isEmpty {
+        paramsJSON = nil
+    } else {
+        let data = try! JSONSerialization.data(withJSONObject: recipeParams)
+        paramsJSON = String(data: data, encoding: .utf8)
+    }
+
+    // Try daemon first
+    if let response = trySendToDaemon(
+        method: "run",
+        params: RPCParams(query: recipeName, text: paramsJSON)
+    ) {
+        printResult(response)
+        return
+    }
+
+    // Direct mode
+    let daemon = directDaemon()
+    let response = daemon.execute(
+        action: "run",
+        params: RPCParams(query: recipeName, text: paramsJSON)
+    )
+    printResult(response)
+}
+
+@MainActor
+func handleRecipes(_ args: [String]) async {
+    // ghost recipes — list all available recipes
+    if let response = trySendToDaemon(method: "recipeList") {
+        printResult(response)
+        return
+    }
+    let daemon = directDaemon()
+    let response = daemon.execute(action: "recipeList", params: RPCParams())
+    printResult(response)
+}
+
+@MainActor
+func handleRecipe(_ args: [String]) async {
+    guard let subcommand = args.first else {
+        print("Usage: ghost recipe show <name> | delete <name> | save <file>")
+        return
+    }
+
+    switch subcommand {
+    case "show":
+        guard args.count > 1 else {
+            print("Usage: ghost recipe show <name>")
+            return
+        }
+        let name = args[1]
+        if let response = trySendToDaemon(method: "recipeShow", params: RPCParams(value: name)) {
+            printResult(response)
+        } else {
+            let daemon = directDaemon()
+            let response = daemon.execute(action: "recipeShow", params: RPCParams(value: name))
+            printResult(response)
+        }
+
+    case "delete":
+        guard args.count > 1 else {
+            print("Usage: ghost recipe delete <name>")
+            return
+        }
+        let name = args[1]
+        if let response = trySendToDaemon(method: "recipeDelete", params: RPCParams(value: name)) {
+            printResult(response)
+        } else {
+            let daemon = directDaemon()
+            let response = daemon.execute(action: "recipeDelete", params: RPCParams(value: name))
+            printResult(response)
+        }
+
+    case "save":
+        guard args.count > 1 else {
+            print("Usage: ghost recipe save <path-to-recipe.json>")
+            return
+        }
+        let path = args[1]
+        // Read the file and send it through RPC
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+              let jsonStr = String(data: data, encoding: .utf8) else {
+            print("Error: Cannot read file at '\(path)'")
+            exit(1)
+        }
+        if let response = trySendToDaemon(method: "recipeSave", params: RPCParams(text: jsonStr)) {
+            printResult(response)
+        } else {
+            let daemon = directDaemon()
+            let response = daemon.execute(action: "recipeSave", params: RPCParams(text: jsonStr))
+            printResult(response)
+        }
+
+    default:
+        print("Usage: ghost recipe show <name> | delete <name> | save <file>")
+    }
+}
+
+@MainActor
+func handleRecordings(_ args: [String]) async {
+    let subcommand = args.first ?? "list"
+
+    switch subcommand {
+    case "list":
+        if let response = trySendToDaemon(method: "recordingList") {
+            printResult(response)
+        } else {
+            let daemon = directDaemon()
+            let response = daemon.execute(action: "recordingList", params: RPCParams())
+            printResult(response)
+        }
+
+    case "show":
+        guard args.count > 1 else {
+            print("Usage: ghost recordings show <name>")
+            return
+        }
+        let name = args[1]
+        if let response = trySendToDaemon(method: "recordingShow", params: RPCParams(value: name)) {
+            printResult(response)
+        } else {
+            let daemon = directDaemon()
+            let response = daemon.execute(action: "recordingShow", params: RPCParams(value: name))
+            printResult(response)
+        }
+
+    default:
+        print("Usage: ghost recordings [list | show <name>]")
+    }
+}
+
 @MainActor
 func handleFocus(_ args: [String]) async {
     guard let appName = args.first else {
@@ -953,6 +1182,63 @@ func printResult(_ response: RPCResponse) {
         outputScreenshot(result, outputPath: nil, printBase64: false)
     case .app(let app):
         printJSON(app)
+    case .runResult(let result):
+        printRunResult(result)
+    case .recipeList(let recipes):
+        printRecipeList(recipes)
+    case .recipe(let recipe):
+        printJSON(recipe)
+    }
+}
+
+/// Print a RunResult (recipe execution output)
+func printRunResult(_ result: RunResult) {
+    let status = result.success ? "SUCCESS" : "FAILED"
+    print("Recipe: \(result.recipe) — \(status)")
+    print("  Steps: \(result.stepsCompleted)/\(result.stepsTotal) completed (\(String(format: "%.1f", result.duration))s)")
+
+    for step in result.stepResults {
+        let icon = step.success ? "+" : "x"
+        let desc = step.description.map { " — \($0)" } ?? ""
+        print("  [\(icon)] Step \(step.id): \(step.action)\(desc) (\(String(format: "%.1f", step.duration))s)")
+    }
+
+    if let fail = result.failedStep {
+        print("")
+        print("  Failed at step \(fail.id) (\(fail.action)): \(fail.error)")
+        if let ctx = fail.context {
+            print("  Context: \(ctx.summary())")
+        }
+        if let screenshot = fail.screenshot {
+            let timestamp = Int(Date().timeIntervalSince1970)
+            let path = "/tmp/ghost-recipe-fail-\(timestamp).png"
+            if let data = Data(base64Encoded: screenshot.base64PNG) {
+                try? data.write(to: URL(fileURLWithPath: path))
+                print("  Debug screenshot: \(path)")
+            }
+        }
+    }
+
+    if let ctx = result.finalContext {
+        print("")
+        print(ctx.summary())
+    }
+
+    if !result.success {
+        exit(1)
+    }
+}
+
+/// Print a recipe list
+func printRecipeList(_ recipes: [RecipeSummary]) {
+    if recipes.isEmpty {
+        print("No recipes found. Save recipes to ~/.ghost-os/recipes/")
+        return
+    }
+    for recipe in recipes {
+        let params = recipe.params.isEmpty ? "" : " (\(recipe.params.joined(separator: ", ")))"
+        let desc = recipe.description ?? "No description"
+        print("  \(recipe.name) — \(desc) [\(recipe.stepCount) steps]\(params)")
     }
 }
 
@@ -993,6 +1279,17 @@ func printUsage() {
       ghost scroll [up|down]      Scroll (default: down)
       ghost screenshot --app <name>  Capture window as PNG (for vision model debugging)
         Options: --output <path>, --window <title>, --base64
+      ghost record start <name>   Start recording commands
+      ghost record stop           Stop recording and save to disk
+      ghost record status         Check if recording is active
+      ghost run <recipe>          Execute a recipe
+        Options: --param key=value, --params-json '{"key":"val"}'
+      ghost recipes               List available recipes
+      ghost recipe show <name>    Show recipe details (JSON)
+      ghost recipe save <file>    Install recipe from JSON file
+      ghost recipe delete <name>  Delete a user recipe
+      ghost recordings            List saved recordings
+      ghost recordings show <name>  Show a recording (JSON)
       ghost focus <app>           Bring app to foreground
       ghost diff                  Show what changed since last state check
       ghost watch                 Live monitor — shows changes in real-time
