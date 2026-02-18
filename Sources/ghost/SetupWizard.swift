@@ -3,7 +3,7 @@
 // Walks the user through:
 //   1. Accessibility permission
 //   2. Screen Recording permission (optional)
-//   3. MCP configuration for Claude Code / Claude Desktop
+//   3. MCP configuration for Claude Code
 //   4. Verification test
 //
 // Usage: ghost setup
@@ -154,58 +154,30 @@ struct SetupWizard {
 
     private func configureMCP() {
         printStep(3, "MCP Configuration")
-        print("  Ghost OS connects to AI agents (Claude Code, Claude Desktop)")
-        print("  through the Model Context Protocol (MCP).")
+        print("  Ghost OS connects to Claude Code through the Model Context Protocol (MCP).")
         print("")
 
         let binaryPath = resolveBinaryPath()
         let hasClaudeCode = detectClaudeCode()
-        let hasClaudeDesktop = detectClaudeDesktop()
 
-        if !hasClaudeCode && !hasClaudeDesktop {
-            print("  No MCP clients detected.")
+        if !hasClaudeCode {
+            let mcpCommand = "claude mcp add --transport stdio ghost-os -- \(binaryPath) mcp"
+            print("  Claude Code not found.")
             print("")
-            print("  To set up manually later:")
-            print("")
-            print("  Claude Code:")
-            print("    claude mcp add --transport stdio ghost-os -- \(binaryPath) mcp")
-            print("")
-            print("  Claude Desktop (~/.config/claude/claude_desktop_config.json):")
-            print("    {")
-            print("      \"mcpServers\": {")
-            print("        \"ghost-os\": {")
-            print("          \"command\": \"\(binaryPath)\",")
-            print("          \"args\": [\"mcp\"]")
-            print("        }")
-            print("      }")
-            print("    }")
+            print("  Install Claude Code first, then run:")
+            print("    \(mcpCommand)")
             print("")
             return
         }
 
-        // Claude Code
-        if hasClaudeCode {
-            configureClaudeCode(binaryPath: binaryPath)
-        }
-
-        // Claude Desktop
-        if hasClaudeDesktop {
-            configureClaudeDesktop(binaryPath: binaryPath)
-        }
-
-        // Permission allow rule
-        print("  ---")
-        print("  Recommended: allow all Ghost OS tools without prompting.")
-        print("  Add this to your Claude Code settings (.claude/settings.local.json):")
-        print("")
-        print("    \"permissions\": {")
-        print("      \"allow\": [\"mcp__ghost-os__*\"]")
-        print("    }")
-        print("")
+        configureClaudeCode(binaryPath: binaryPath)
     }
 
     private func configureClaudeCode(binaryPath: String) {
         print("  Found: Claude Code")
+        print("  Checking MCP configuration...")
+
+        let mcpCommand = "claude mcp add --transport stdio ghost-os -- \(binaryPath) mcp"
 
         // Check if already configured
         if isGhostOSConfiguredInClaudeCode() {
@@ -218,58 +190,33 @@ struct SetupWizard {
         let result = runProcess(
             "/usr/bin/env",
             args: ["claude", "mcp", "add", "--transport", "stdio", "ghost-os", "--", binaryPath, "mcp"],
-            env: ["CLAUDECODE": ""]  // Unset to avoid nested session error
+            env: ["CLAUDECODE": ""],  // Unset to avoid nested session error
+            timeout: 15
         )
 
         if result.exitCode == 0 {
             print("  Done.")
-        } else {
-            print("  Auto-configure failed. Add manually:")
-            print("    claude mcp add --transport stdio ghost-os -- \(binaryPath) mcp")
-        }
-        print("")
-    }
-
-    private func configureClaudeDesktop(binaryPath: String) {
-        print("  Found: Claude Desktop")
-
-        let configPath = claudeDesktopConfigPath()
-        var config: [String: Any] = [:]
-
-        // Read existing config
-        if let data = try? Data(contentsOf: URL(fileURLWithPath: configPath)),
-           let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            config = parsed
-        }
-
-        // Check if already configured
-        if let servers = config["mcpServers"] as? [String: Any], servers["ghost-os"] != nil {
-            print("  Ghost OS is already configured in Claude Desktop.")
+        } else if result.stderr == "timed out" {
+            print("  Claude CLI did not respond (it may need login or first-run setup).")
             print("")
-            return
-        }
-
-        // Add ghost-os server
-        var servers = (config["mcpServers"] as? [String: Any]) ?? [:]
-        servers["ghost-os"] = [
-            "command": binaryPath,
-            "args": ["mcp"]
-        ] as [String: Any]
-        config["mcpServers"] = servers
-
-        // Write config
-        do {
-            let data = try JSONSerialization.data(withJSONObject: config, options: [.prettyPrinted, .sortedKeys])
-            let dir = (configPath as NSString).deletingLastPathComponent
-            try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-            try data.write(to: URL(fileURLWithPath: configPath))
-            print("  Updated \(configPath)")
-        } catch {
-            print("  Could not write config. Add manually to \(configPath):")
-            print("    \"ghost-os\": {\"command\": \"\(binaryPath)\", \"args\": [\"mcp\"]}")
+            print("  After setting up Claude Code, run this command:")
+            print("    \(mcpCommand)")
+        } else {
+            print("  Auto-configure failed.")
+            print("")
+            print("  Run this command to add Ghost OS to Claude Code:")
+            print("    \(mcpCommand)")
         }
         print("")
+        print("  To allow all Ghost OS tools without approval prompts, add this")
+        print("  to your project's .claude/settings.local.json:")
+        print("")
+        print("    \"permissions\": {")
+        print("      \"allow\": [\"mcp__ghost-os__*\"]")
+        print("    }")
+        print("")
     }
+
 
     // MARK: - Step 4: Verification
 
@@ -313,7 +260,7 @@ struct SetupWizard {
             print("  Setup complete. Ghost OS is ready.")
             print("")
             print("  Next steps:")
-            print("    1. Start a new Claude Code session (or restart Claude Desktop)")
+            print("    1. Start a new Claude Code session")
             print("    2. Ask Claude to interact with any app on your screen")
             print("    3. Try: \"What apps are on my screen right now?\"")
         } else if !accessibility {
@@ -333,9 +280,6 @@ struct SetupWizard {
         return result.exitCode == 0 && !result.stdout.isEmpty
     }
 
-    private func detectClaudeDesktop() -> Bool {
-        FileManager.default.fileExists(atPath: claudeDesktopConfigDir())
-    }
 
     private func isGhostOSConfiguredInClaudeCode() -> Bool {
         let result = runProcess(
@@ -346,14 +290,6 @@ struct SetupWizard {
         return result.exitCode == 0
     }
 
-    private func claudeDesktopConfigDir() -> String {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        return "\(home)/Library/Application Support/Claude"
-    }
-
-    private func claudeDesktopConfigPath() -> String {
-        "\(claudeDesktopConfigDir())/claude_desktop_config.json"
-    }
 
     // MARK: - Utility Helpers
 
@@ -389,7 +325,7 @@ struct SetupWizard {
         let exitCode: Int32
     }
 
-    private func runProcess(_ executable: String, args: [String], env: [String: String]? = nil) -> ProcessResult {
+    private func runProcess(_ executable: String, args: [String], env: [String: String]? = nil, timeout: TimeInterval = 10) -> ProcessResult {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = args
@@ -413,9 +349,19 @@ struct SetupWizard {
 
         do {
             try process.run()
-            process.waitUntilExit()
         } catch {
             return ProcessResult(stdout: "", stderr: error.localizedDescription, exitCode: -1)
+        }
+
+        // Wait with timeout to avoid hanging on interactive prompts
+        let deadline = Date().addingTimeInterval(timeout)
+        while process.isRunning && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+
+        if process.isRunning {
+            process.terminate()
+            return ProcessResult(stdout: "", stderr: "timed out", exitCode: -1)
         }
 
         let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()

@@ -110,22 +110,38 @@ This is the opposite of hand-written skills. The agent learns by doing, records 
 
 ## Setup
 
+### Permissions
+
+Ghost OS needs two macOS permissions. Grant these to whatever terminal app you use (iTerm2, Terminal, Warp, VS Code, etc.).
+
+1. **Accessibility** (required) - System Settings > Privacy & Security > Accessibility
+   Add your terminal app. Ghost OS uses this to read the UI of every app on your screen.
+
+2. **Screen Recording** (optional) - System Settings > Privacy & Security > Screen Recording
+   Add your terminal app. Only needed for `ghost screenshot`. Skip this if you don't need screenshots.
+
+Grant these **before** running `ghost setup`. If you skip this step, macOS will show a permission dialog during setup that can interrupt the process.
+
 ### What `ghost setup` does
 
-1. **Checks Accessibility permission** - Opens System Settings if needed, waits for you to grant it
-2. **Checks Screen Recording permission** (optional) - For `ghost screenshot`
-3. **Detects Claude Code** - Auto-runs `claude mcp add` to register Ghost OS
-4. **Runs verification** - Confirms it can read your screen
+```bash
+ghost setup
+```
+
+1. Checks that Accessibility permission is granted
+2. Checks Screen Recording permission (optional)
+3. Detects Claude Code and registers Ghost OS as an MCP server
+4. Runs a verification test to confirm everything works
 
 ### Manual Claude Code setup
 
-If you prefer to configure manually:
+If `ghost setup` can't auto-configure Claude Code (or you prefer to do it yourself):
 
 ```bash
 claude mcp add --transport stdio ghost-os -- ghost mcp
 ```
 
-Allow all Ghost OS tools without approval prompts. Add to your `.claude/settings.local.json`:
+Then allow all Ghost OS tools without approval prompts. Add to your project's `.claude/settings.local.json`:
 
 ```json
 {
@@ -135,13 +151,7 @@ Allow all Ghost OS tools without approval prompts. Add to your `.claude/settings
 }
 ```
 
-### Permissions explained
-
-**Accessibility** (required): Ghost OS reads the UI structure of every app through the macOS accessibility API. Your terminal app needs this permission. Go to System Settings > Privacy & Security > Accessibility.
-
-**Screen Recording** (optional): Only for `ghost screenshot`. Useful when the accessibility tree doesn't tell the whole story (canvas apps, PDFs, visual debugging). Same place in System Settings, under Screen Recording.
-
-**Important:** Run `ghost setup` before starting Claude Code. If permissions aren't granted beforehand, macOS shows a dialog that steals focus and breaks the agent's workflow.
+Start a new Claude Code session after setup. Your agent can now see your screen.
 
 ## CLI
 
