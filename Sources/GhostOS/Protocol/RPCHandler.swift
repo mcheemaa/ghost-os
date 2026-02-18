@@ -70,6 +70,8 @@ public final class RPCHandler {
             return handleSmartClick(params: params, id: id)
         case "smartType":
             return handleSmartType(params: params, id: id)
+        case "getContext":
+            return handleGetContext(params: params, id: id)
         case "describe":
             return handleDescribe(params: params, id: id)
         case "refresh":
@@ -241,13 +243,9 @@ public final class RPCHandler {
         guard let query = params?.target ?? params?.query else {
             return .failure(.invalidParams("'target' or 'query' required"), id: id)
         }
-        stateManager.refresh()
-        guard let tree = stateManager.getTree(appName: params?.app, depth: 8) else {
-            return .failure(.notFound("No app found"), id: id)
-        }
-        let result = actionExecutor.smartClick(query: query, role: params?.role, in: tree)
+        let result = actionExecutor.smartClick(query: query, role: params?.role, appName: params?.app)
         if result.success {
-            return .success(.message(result.description), id: id)
+            return .success(.actionResult(result), id: id)
         }
         return .failure(.notFound(result.description), id: id)
     }
@@ -256,20 +254,24 @@ public final class RPCHandler {
         guard let text = params?.text else {
             return .failure(.invalidParams("'text' required"), id: id)
         }
-        stateManager.refresh()
-        guard let tree = stateManager.getTree(appName: params?.app, depth: 8) else {
-            return .failure(.notFound("No app found"), id: id)
-        }
         let result = actionExecutor.smartType(
             text: text,
             target: params?.target,
             role: params?.role,
-            in: tree
+            appName: params?.app
         )
         if result.success {
-            return .success(.message(result.description), id: id)
+            return .success(.actionResult(result), id: id)
         }
         return .failure(.notFound(result.description), id: id)
+    }
+
+    private func handleGetContext(params: RPCParams?, id: Int) -> RPCResponse {
+        stateManager.refresh()
+        if let ctx = stateManager.getContext(appName: params?.app) {
+            return .success(.context(ctx), id: id)
+        }
+        return .failure(.notFound("No app found"), id: id)
     }
 
     private func handleDescribe(params: RPCParams?, id: Int) -> RPCResponse {

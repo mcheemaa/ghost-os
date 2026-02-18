@@ -85,6 +85,8 @@ public enum RPCResult: Codable, Sendable {
     case diff(StateDiff)
     case content([ContentItem])
     case app(AppInfo)
+    case context(ContextInfo)
+    case actionResult(ActionResult)
     case message(String)
     case bool(Bool)
 
@@ -114,6 +116,12 @@ public enum RPCResult: Codable, Sendable {
         case let .app(app):
             try container.encode("app", forKey: .type)
             try container.encode(app, forKey: .data)
+        case let .context(ctx):
+            try container.encode("context", forKey: .type)
+            try container.encode(ctx, forKey: .data)
+        case let .actionResult(result):
+            try container.encode("actionResult", forKey: .type)
+            try container.encode(result, forKey: .data)
         case let .message(msg):
             try container.encode("message", forKey: .type)
             try container.encode(msg, forKey: .data)
@@ -139,6 +147,10 @@ public enum RPCResult: Codable, Sendable {
             self = .content(try container.decode([ContentItem].self, forKey: .data))
         case "app":
             self = .app(try container.decode(AppInfo.self, forKey: .data))
+        case "context":
+            self = .context(try container.decode(ContextInfo.self, forKey: .data))
+        case "actionResult":
+            self = .actionResult(try container.decode(ActionResult.self, forKey: .data))
         case "message":
             self = .message(try container.decode(String.self, forKey: .data))
         case "bool":

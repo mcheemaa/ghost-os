@@ -110,6 +110,118 @@ public struct WindowInfo: Codable, Sendable {
     }
 }
 
+// MARK: - Context (Situational Awareness)
+
+/// Rich context about the current app — everything an AI agent needs to understand
+/// where it is and what it can do. One command, instant answer.
+/// Works across all app types: web, native, Electron, terminal.
+public struct ContextInfo: Codable, Sendable {
+    public let app: String              // App name
+    public let bundleId: String?        // Bundle identifier
+    public let window: String?          // Active window title
+    public let url: String?             // Page URL (web/Electron) or document path (native)
+    public let pageTitle: String?       // Web page title or document name
+    public let focused: FocusInfo?      // Currently focused element
+    public let interactiveElements: [String]  // Nearby clickable/typeable things
+    public let windowTabs: [String]     // Window titles (one per Chrome window, or tabs where available)
+
+    public init(
+        app: String,
+        bundleId: String?,
+        window: String?,
+        url: String?,
+        pageTitle: String?,
+        focused: FocusInfo?,
+        interactiveElements: [String],
+        windowTabs: [String]
+    ) {
+        self.app = app
+        self.bundleId = bundleId
+        self.window = window
+        self.url = url
+        self.pageTitle = pageTitle
+        self.focused = focused
+        self.interactiveElements = interactiveElements
+        self.windowTabs = windowTabs
+    }
+
+    /// Compact text summary for agent prompts
+    public func summary() -> String {
+        var lines: [String] = []
+        lines.append("App: \(app)")
+        if let window = window, !window.isEmpty {
+            lines.append("Window: \(window)")
+        }
+        if let url = url {
+            lines.append("URL: \(url)")
+        }
+        if let pageTitle = pageTitle, pageTitle != window {
+            lines.append("Page: \(pageTitle)")
+        }
+        if let focused = focused {
+            var focusDesc = focused.role
+            if let label = focused.label, !label.isEmpty {
+                focusDesc += " \"\(label)\""
+            }
+            if focused.isEditable {
+                focusDesc += " [editable]"
+            }
+            if let val = focused.value, !val.isEmpty {
+                focusDesc += " = \(val.prefix(50))"
+            }
+            lines.append("Focused: \(focusDesc)")
+        }
+        if !interactiveElements.isEmpty {
+            let shown = interactiveElements.prefix(10)
+            lines.append("Actions: \(shown.joined(separator: ", "))")
+            if interactiveElements.count > 10 {
+                lines.append("  ... +\(interactiveElements.count - 10) more")
+            }
+        }
+        if windowTabs.count > 1 {
+            lines.append("Windows/Tabs: \(windowTabs.count)")
+            for (i, tab) in windowTabs.enumerated() {
+                let marker = (tab == window) ? " *" : ""
+                lines.append("  \(i + 1). \(tab)\(marker)")
+            }
+        }
+        return lines.joined(separator: "\n")
+    }
+}
+
+/// Info about the currently focused element
+public struct FocusInfo: Codable, Sendable {
+    public let role: String
+    public let label: String?
+    public let value: String?
+    public let isEditable: Bool
+
+    public init(role: String, label: String?, value: String?, isEditable: Bool) {
+        self.role = role
+        self.label = label
+        self.value = value
+        self.isEditable = isEditable
+    }
+}
+
+// MARK: - Action Results
+
+/// The result of any action command — includes what happened AND where we are now.
+/// This is the key design: one command = action + verification.
+public struct ActionResult: Codable, Sendable {
+    public let success: Bool
+    public let description: String    // "Pressed 'Compose' via AX-native"
+    public let method: String         // "ax-native", "synthetic", "setValue", "typeText", "none"
+    public let context: ContextInfo?  // post-action situational awareness
+
+    public init(success: Bool, description: String, method: String, context: ContextInfo?) {
+        self.success = success
+        self.description = description
+        self.method = method
+        self.context = context
+    }
+}
+
 // MARK: - Content Reading
 
 /// A single piece of readable content extracted from the screen

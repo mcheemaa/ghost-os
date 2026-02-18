@@ -90,6 +90,21 @@ public final class StateManager {
         return ElementNode.from(appElement, depth: depth, maxChildren: 200)
     }
 
+    /// Get the content tree for an app — rooted at AXWebArea (web apps) or focused window (native).
+    /// This skips menus and chrome, giving SmartResolver access to the actual page content
+    /// with a deep enough depth budget to reach interactive elements.
+    public func getContentTree(appName: String? = nil, depth: Int = 15) -> ElementNode? {
+        let targetApp = appName ?? currentState.frontmostApp?.name
+        guard let app = targetApp else { return nil }
+        guard let appInfo = currentState.apps.first(where: {
+            $0.name.localizedCaseInsensitiveContains(app)
+        }) else { return nil }
+
+        guard let contentRoot = findContentRoot(pid: appInfo.pid) else { return nil }
+        var visited = Set<UInt>()
+        return ElementNode.from(contentRoot, depth: depth, maxChildren: 200, visited: &visited)
+    }
+
     /// Refresh the full state (called on startup and on major events)
     public func refresh() {
         let workspace = NSWorkspace.shared
@@ -585,6 +600,152 @@ public final class StateManager {
         }
     }
 
+    // MARK: - Context (Situational Awareness)
+
+    /// Get rich context about the current app — everything an AI agent needs to know.
+    /// Works across all app types: web (Chrome, Firefox), Electron (Slack, VS Code),
+    /// native (Finder, System Settings), and terminal apps.
+    public func getContext(appName: String? = nil) -> ContextInfo? {
+        let targetApp = appName ?? currentState.frontmostApp?.name
+        guard let app = targetApp else { return nil }
+        guard let appInfo = currentState.apps.first(where: {
+            $0.name.localizedCaseInsensitiveContains(app)
+        }) else { return nil }
+
+        let axApp = AXUIElementCreateApplication(appInfo.pid)
+        let appElement = Element(axApp)
+
+        // 1. Window title
+        let windowTitle: String?
+        if let focusedWindow = appElement.focusedWindow() {
+            windowTitle = focusedWindow.title()
+        } else if let windows = appElement.windows(), let first = windows.first {
+            windowTitle = first.title()
+        } else {
+            windowTitle = appInfo.windows.first?.title
+        }
+
+        // 2. URL — check AXWebArea first (Chrome, Firefox, Safari), then AXDocument (native apps)
+        var url: String? = nil
+        var pageTitle: String? = nil
+        if let webArea = findElementByRole(appElement, role: "AXWebArea", maxDepth: 8) {
+            if let webUrl = webArea.url() {
+                url = webUrl.absoluteString
+            }
+            // Web area title is often the page title
+            let webTitle = webArea.title()
+            if let t = webTitle, !t.isEmpty {
+                pageTitle = t
+            }
+        }
+        // Fallback: AXDocument attribute on the app or focused window
+        if url == nil {
+            if let docUrl = readDocumentAttribute(appElement) {
+                url = docUrl
+            } else if let focusedWindow = appElement.focusedWindow() {
+                if let docUrl = readDocumentAttribute(focusedWindow) {
+                    url = docUrl
+                }
+            }
+        }
+
+        // 3. Focused element info
+        var focusInfo: FocusInfo? = nil
+        if let focused = appElement.focusedUIElement() {
+            let role = focused.role() ?? "Unknown"
+            let label = focused.title() ?? focused.descriptionText()
+            var val: String? = nil
+            if let v = focused.value() {
+                let s = String(describing: v).trimmingCharacters(in: .whitespacesAndNewlines)
+                if !s.isEmpty && s != "nil" { val = s }
+            }
+            let editable = focused.isEditable() ?? false
+            focusInfo = FocusInfo(role: role, label: label, value: val, isEditable: editable)
+        }
+
+        // 4. Interactive elements — buttons, links, text fields near the user's focus
+        var interactiveDescs: [String] = []
+        let contentRoot = findContentRoot(pid: appInfo.pid)
+        if let root = contentRoot {
+            var visited = Set<UInt>()
+            collectInteractiveElements(root, descriptions: &interactiveDescs, visited: &visited, maxDepth: 10, depth: 0)
+        }
+
+        // 5. Window titles as "tabs" — each window title listed
+        let windowTabs = appInfo.windows.compactMap { win -> String? in
+            guard let title = win.title, !title.isEmpty else { return nil }
+            if win.isMinimized { return nil }
+            return title
+        }
+
+        return ContextInfo(
+            app: appInfo.name,
+            bundleId: appInfo.bundleId,
+            window: windowTitle,
+            url: url,
+            pageTitle: pageTitle,
+            focused: focusInfo,
+            interactiveElements: interactiveDescs,
+            windowTabs: windowTabs
+        )
+    }
+
+    /// Read AXDocument attribute from an element (returns file path or URL string)
+    private func readDocumentAttribute(_ element: Element) -> String? {
+        var value: CFTypeRef?
+        let error = AXUIElementCopyAttributeValue(
+            element.underlyingElement,
+            "AXDocument" as CFString,
+            &value
+        )
+        guard error == .success, let cfValue = value else { return nil }
+        if let str = cfValue as? String, !str.isEmpty {
+            return str
+        }
+        return nil
+    }
+
+    /// Collect short descriptions of interactive elements (buttons, links, text fields)
+    private func collectInteractiveElements(
+        _ element: Element,
+        descriptions: inout [String],
+        visited: inout Set<UInt>,
+        maxDepth: Int,
+        depth: Int
+    ) {
+        if depth > maxDepth || descriptions.count >= 30 { return }
+
+        let hash = CFHash(element.underlyingElement)
+        guard !visited.contains(hash) else { return }
+        visited.insert(hash)
+
+        let role = element.role() ?? ""
+
+        // Skip menus
+        if Self.skipRoles.contains(role) { return }
+
+        // Check if interactive
+        let interactiveRoles: Set<String> = [
+            "AXButton", "AXLink", "AXTextField", "AXTextArea", "AXComboBox",
+            "AXPopUpButton", "AXCheckBox", "AXRadioButton", "AXMenuItem",
+            "AXSlider", "AXIncrementor", "AXTab"
+        ]
+
+        if interactiveRoles.contains(role) {
+            let label = element.title() ?? element.descriptionText() ?? ""
+            if !label.isEmpty {
+                let shortRole = role.replacingOccurrences(of: "AX", with: "").lowercased()
+                descriptions.append("\(shortRole): \(label)")
+            }
+        }
+
+        // Recurse
+        guard let children = element.children() else { return }
+        for child in children.prefix(50) {
+            collectInteractiveElements(child, descriptions: &descriptions, visited: &visited, maxDepth: maxDepth, depth: depth + 1)
+        }
+    }
+
     /// Deep find — searches from the content root (skipping menus) with fresh depth budget.
     /// This finds elements that the regular findElements misses because they're too deep.
     public func findElementsDeep(
@@ -610,6 +771,169 @@ public final class StateManager {
                 actions: nil, children: nil
             )
         return searchTree(root, query: query, role: role)
+    }
+
+    // MARK: - App Resolution
+
+    /// Resolve an app by name — extracted from the repeated pattern used everywhere.
+    public func resolveApp(_ appName: String? = nil) -> AppInfo? {
+        let targetApp = appName ?? currentState.frontmostApp?.name
+        guard let app = targetApp else { return nil }
+        return currentState.apps.first(where: {
+            $0.name.localizedCaseInsensitiveContains(app)
+        })
+    }
+
+    // MARK: - Live Element Search (for AX-native actions)
+
+    /// Find a live Element by fuzzy matching — searches content tree first, falls back to full tree.
+    /// Returns the AXUIElement handle for AX-native actions (performAction, setValue, etc.).
+    public func findLiveElement(query: String, role: String? = nil, appName: String? = nil) -> Element? {
+        guard let appInfo = resolveApp(appName) else { return nil }
+
+        // Normalize role: "button" → "AXButton"
+        let normalizedRole: String?
+        if let role = role {
+            normalizedRole = role.hasPrefix("AX") ? role : "AX" + role.prefix(1).uppercased() + role.dropFirst()
+        } else {
+            normalizedRole = nil
+        }
+
+        let queryLower = query.lowercased().trimmingCharacters(in: .whitespaces)
+
+        // Strategy 1: Search content root first (in-page elements like buttons, text fields)
+        if let contentRoot = findContentRoot(pid: appInfo.pid) {
+            var visited = Set<UInt>()
+            if let found = searchLiveTree(
+                contentRoot, queryLower: queryLower, role: normalizedRole,
+                maxDepth: 15, depth: 0, visited: &visited
+            ) {
+                return found
+            }
+        }
+
+        // Strategy 2: Fall back to full app tree (menus, toolbar, etc.)
+        let axApp = AXUIElementCreateApplication(appInfo.pid)
+        let appElement = Element(axApp)
+        var visited = Set<UInt>()
+        return searchLiveTree(
+            appElement, queryLower: queryLower, role: normalizedRole,
+            maxDepth: 8, depth: 0, visited: &visited
+        )
+    }
+
+    /// Walk a live Element tree with fuzzy matching. Returns the best match above threshold.
+    /// Scoring mirrors SmartResolver: exact > prefix > contains > word match.
+    private func searchLiveTree(
+        _ element: Element,
+        queryLower: String,
+        role: String?,
+        maxDepth: Int,
+        depth: Int,
+        visited: inout Set<UInt>,
+        bestMatch: inout (element: Element, score: Int)?
+    ) {
+        if depth > maxDepth { return }
+
+        // Cycle detection
+        let hash = CFHash(element.underlyingElement)
+        guard !visited.contains(hash) else { return }
+        visited.insert(hash)
+
+        let elementRole = element.role() ?? ""
+
+        // Skip menus
+        if Self.skipRoles.contains(elementRole) { return }
+
+        // Check role filter
+        let roleMatches: Bool
+        if let role = role {
+            roleMatches = elementRole.caseInsensitiveCompare(role) == .orderedSame
+        } else {
+            roleMatches = true
+        }
+
+        // Score this element
+        if roleMatches || role == nil {
+            let title = element.title() ?? ""
+            let desc = element.descriptionText() ?? ""
+            let titleLower = title.lowercased()
+            let descLower = desc.lowercased()
+
+            var score = 0
+            // Exact match
+            if !titleLower.isEmpty && titleLower == queryLower {
+                score = 100
+            } else if !descLower.isEmpty && descLower == queryLower {
+                score = 100
+            }
+            // Trimmed match
+            else if !titleLower.isEmpty && titleLower.trimmingCharacters(in: .whitespaces) == queryLower {
+                score = 95
+            }
+            // Starts with
+            else if !titleLower.isEmpty && titleLower.hasPrefix(queryLower) {
+                score = 80
+            } else if !descLower.isEmpty && descLower.hasPrefix(queryLower) {
+                score = 80
+            }
+            // Contains
+            else if !titleLower.isEmpty && titleLower.contains(queryLower) {
+                score = 60
+            } else if !descLower.isEmpty && descLower.contains(queryLower) {
+                score = 60
+            }
+
+            // Role match bonus
+            if score > 0 && role != nil && roleMatches {
+                score += 20
+            }
+
+            // Interactivity bonus
+            if score > 0 {
+                let interactiveRoles: Set<String> = [
+                    "AXButton", "AXLink", "AXTextField", "AXTextArea", "AXComboBox",
+                    "AXPopUpButton", "AXCheckBox", "AXRadioButton", "AXMenuItem",
+                ]
+                if interactiveRoles.contains(elementRole) {
+                    score += 15
+                }
+            }
+
+            if score >= 50 {
+                if bestMatch == nil || score > bestMatch!.score {
+                    bestMatch = (element, score)
+                }
+            }
+        }
+
+        // Recurse into children
+        guard let children = element.children() else { return }
+        for child in children.prefix(100) {
+            searchLiveTree(
+                child, queryLower: queryLower, role: role,
+                maxDepth: maxDepth, depth: depth + 1,
+                visited: &visited, bestMatch: &bestMatch
+            )
+        }
+    }
+
+    /// Convenience wrapper that initializes bestMatch and returns the result
+    private func searchLiveTree(
+        _ root: Element,
+        queryLower: String,
+        role: String?,
+        maxDepth: Int,
+        depth: Int,
+        visited: inout Set<UInt>
+    ) -> Element? {
+        var bestMatch: (element: Element, score: Int)? = nil
+        searchLiveTree(
+            root, queryLower: queryLower, role: role,
+            maxDepth: maxDepth, depth: depth,
+            visited: &visited, bestMatch: &bestMatch
+        )
+        return bestMatch?.element
     }
 
     // MARK: - Element Search

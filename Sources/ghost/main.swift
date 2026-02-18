@@ -18,6 +18,7 @@
 //   ghost focus Chrome           Focus an app
 //   ghost diff                   Show what changed since last check
 //   ghost watch                  Continuous state change monitoring
+//   ghost context                Where am I? URL, focused element, actions
 //   ghost describe               Natural language screen description
 //   ghost permissions            Check accessibility permissions
 
@@ -63,6 +64,8 @@ func main() async {
         await handleWatch(subArgs)
     case "read":
         await handleRead(subArgs)
+    case "context":
+        await handleContext(subArgs)
     case "describe":
         await handleDescribe(subArgs)
     case "permissions":
@@ -227,23 +230,51 @@ func handleFind(_ args: [String]) async {
     }
 
     // Smart mode uses SmartResolver for fuzzy, scored matching
+    // Strategy: search content tree first, then full app tree, merge results preferring content
     if useSmart {
         let daemon = directDaemon()
-        guard let tree = daemon.getTree(app: appName, depth: 8) else {
-            print("No app found")
-            return
-        }
         let resolver = SmartResolver()
-        let matches = resolver.resolve(
-            query: query.isEmpty ? "" : query,
-            role: role,
-            in: tree,
-            limit: limit
-        )
-        if matches.isEmpty {
+        var allMatches: [ResolvedElement] = []
+
+        // Search content tree first (in-page elements get priority)
+        if let contentTree = daemon.getContentTree(app: appName, depth: 15) {
+            let contentMatches = resolver.resolve(
+                query: query.isEmpty ? "" : query,
+                role: role,
+                in: contentTree,
+                limit: limit
+            )
+            allMatches.append(contentsOf: contentMatches)
+        }
+
+        // Also search full app tree (menus, toolbar) — but only add if we need more results
+        if allMatches.count < limit {
+            if let fullTree = daemon.getTree(app: appName, depth: 8) {
+                let fullMatches = resolver.resolve(
+                    query: query.isEmpty ? "" : query,
+                    role: role,
+                    in: fullTree,
+                    limit: limit
+                )
+                // Only add matches from full tree that aren't duplicates of content matches
+                let contentLabels = Set(allMatches.map { $0.node.label ?? $0.node.id })
+                for match in fullMatches {
+                    let label = match.node.label ?? match.node.id
+                    if !contentLabels.contains(label) {
+                        allMatches.append(match)
+                    }
+                }
+            }
+        }
+
+        // Sort: content matches first (higher score from deeper tree), then full tree
+        allMatches.sort { $0.score > $1.score }
+        let topMatches = Array(allMatches.prefix(limit))
+
+        if topMatches.isEmpty {
             print("No matches found")
         } else {
-            for (i, match) in matches.enumerated() {
+            for (i, match) in topMatches.enumerated() {
                 let label = match.node.label ?? match.node.id
                 let pos = match.node.position.map {
                     " at (\(Int($0.x)),\(Int($0.y)))"
@@ -285,7 +316,6 @@ func handleClick(_ args: [String]) async {
         if let response = trySendToDaemon(method: "click", params: params) {
             printResult(response)
         } else {
-            // Direct mode for coordinate click
             let daemon = directDaemon()
             let result = daemon.execute(action: "click", params: params)
             printResult(result)
@@ -304,7 +334,7 @@ func handleClick(_ args: [String]) async {
         return
     }
 
-    // Try smart click via daemon first
+    // Try daemon first
     if let response = trySendToDaemon(
         method: "smartClick",
         params: RPCParams(target: target, app: appName)
@@ -313,22 +343,10 @@ func handleClick(_ args: [String]) async {
         return
     }
 
-    // Direct mode: smart click using SmartResolver
+    // Direct mode: smart click with AX-native first strategy
     let daemon = directDaemon()
-    guard let tree = daemon.getTree(app: appName, depth: 8) else {
-        print("No app found")
-        return
-    }
-    let stateManager = StateManager()
-    stateManager.refresh()
-    let executor = ActionExecutor(stateManager: stateManager)
-    let result = executor.smartClick(query: target, in: tree)
-    if result.success {
-        print(result.description)
-    } else {
-        print("Error: \(result.description)")
-        exit(1)
-    }
+    let result = daemon.smartClick(query: target, app: appName)
+    printActionResult(result)
 }
 
 @MainActor
@@ -337,7 +355,7 @@ func handleType(_ args: [String]) async {
     let target = flagValue(args, flag: "--into")
 
     // Remove flags from text
-    let flagKeys: Set<String> = ["--app", "--into"]
+    let flagKeys: Set<String> = ["--app", "--into", "--delay"]
     let flagVals: Set<String> = Set(
         flagKeys.compactMap { flagValue(args, flag: $0) }
     )
@@ -347,8 +365,9 @@ func handleType(_ args: [String]) async {
         return
     }
 
-    // With --into: use smart type to find field first
-    if target != nil {
+    // Smart type — handles --into and --app with AX-native first strategy
+    if target != nil || appName != nil {
+        // Try daemon first
         if let response = trySendToDaemon(
             method: "smartType",
             params: RPCParams(target: target, text: text, app: appName)
@@ -356,33 +375,21 @@ func handleType(_ args: [String]) async {
             printResult(response)
             return
         }
-        // Direct mode smart type
+        // Direct mode
         let daemon = directDaemon()
-        guard let tree = daemon.getTree(app: appName, depth: 8) else {
-            print("No app found")
-            return
-        }
-        let stateManager = StateManager()
-        stateManager.refresh()
-        let executor = ActionExecutor(stateManager: stateManager)
-        let result = executor.smartType(text: text, target: target, in: tree)
-        if result.success {
-            print(result.description)
-        } else {
-            print("Error: \(result.description)")
-            exit(1)
-        }
+        let result = daemon.smartType(text: text, target: target, app: appName)
+        printActionResult(result)
         return
     }
 
-    // Simple type at current focus
+    // Simple type at current focus (no target, no app)
     let params = RPCParams(text: text)
     if let response = trySendToDaemon(method: "type", params: params) {
         printResult(response)
     } else {
         let daemon = directDaemon()
-        let result = daemon.execute(action: "type", params: params)
-        printResult(result)
+        let result = daemon.smartType(text: text)
+        printActionResult(result)
     }
 }
 
@@ -530,6 +537,8 @@ func handleRead(_ args: [String]) async {
     let appName = flagValue(args, flag: "--app")
     let depthStr = flagValue(args, flag: "--depth")
     let maxDepth = depthStr.flatMap(Int.init) ?? 20
+    let limitStr = flagValue(args, flag: "--limit")
+    let limit = limitStr.flatMap(Int.init)
     let useJSON = args.contains("--json")
 
     // Try daemon first
@@ -538,7 +547,11 @@ func handleRead(_ args: [String]) async {
         params: RPCParams(app: appName, depth: maxDepth)
     ) {
         if !useJSON, case let .content(items) = response.result {
-            renderContent(items)
+            let limited = limit != nil ? Array(items.prefix(limit!)) : items
+            renderContent(limited)
+            if let limit = limit, items.count > limit {
+                print("\n... (\(items.count - limit) more items, use --limit to see more)")
+            }
         } else {
             printJSON(response)
         }
@@ -553,9 +566,14 @@ func handleRead(_ args: [String]) async {
         return
     }
     if useJSON {
-        printJSON(items)
+        let limited = limit != nil ? Array(items.prefix(limit!)) : items
+        printJSON(limited)
     } else {
-        renderContent(items)
+        let limited = limit != nil ? Array(items.prefix(limit!)) : items
+        renderContent(limited)
+        if let limit = limit, items.count > limit {
+            print("\n... (\(items.count - limit) more items, use --limit to see more)")
+        }
     }
 }
 
@@ -572,6 +590,38 @@ func renderContent(_ items: [ContentItem]) {
         }
         print(text)
         lastDepth = item.depth
+    }
+}
+
+@MainActor
+func handleContext(_ args: [String]) async {
+    let appName = flagValue(args, flag: "--app")
+    let useJSON = args.contains("--json")
+
+    // Try daemon first
+    if let response = trySendToDaemon(
+        method: "getContext",
+        params: RPCParams(app: appName)
+    ) {
+        if !useJSON, case let .context(ctx) = response.result {
+            print(ctx.summary())
+        } else {
+            printJSON(response)
+        }
+        return
+    }
+
+    // Direct mode
+    let daemon = directDaemon()
+    guard let ctx = daemon.getContext(app: appName) else {
+        print("No app found\(appName.map { " matching '\($0)'" } ?? "")")
+        return
+    }
+
+    if useJSON {
+        printJSON(ctx)
+    } else {
+        print(ctx.summary())
     }
 }
 
@@ -654,6 +704,22 @@ func printJSON<T: Encodable>(_ value: T) {
     }
 }
 
+/// Print an ActionResult in a human-friendly way: action line + context
+func printActionResult(_ result: ActionResult) {
+    if result.success {
+        print(result.description)
+    } else {
+        print("Error: \(result.description)")
+    }
+    if let ctx = result.context {
+        print("")
+        print(ctx.summary())
+    }
+    if !result.success {
+        exit(1)
+    }
+}
+
 /// Print an RPC response in a human-friendly way
 func printResult(_ response: RPCResponse) {
     if let error = response.error {
@@ -679,6 +745,10 @@ func printResult(_ response: RPCResponse) {
         print(diff.summary())
     case .content(let items):
         renderContent(items)
+    case .actionResult(let result):
+        printActionResult(result)
+    case .context(let ctx):
+        print(ctx.summary())
     case .app(let app):
         printJSON(app)
     }
@@ -705,6 +775,7 @@ func printUsage() {
       ghost find --deep           Skip menus, search deep into content
       ghost read                  Read text content from frontmost app
       ghost read --app <name>     Read content from specific app
+      ghost read --limit <n>      Limit output to first n items (for AI agents)
       ghost click <label>         Smart click — find best match and click it
       ghost click --at x,y        Click at exact coordinates
       ghost type <text>           Type text at current focus
@@ -715,6 +786,9 @@ func printUsage() {
       ghost focus <app>           Bring app to foreground
       ghost diff                  Show what changed since last state check
       ghost watch                 Live monitor — shows changes in real-time
+      ghost context               Where am I? URL + focused element + actions
+      ghost context --app <name>  Context for specific app
+      ghost context --json        Output as JSON
       ghost describe              Natural language screen description
       ghost describe --app <name> Include element tree for specific app
       ghost permissions           Check accessibility permissions

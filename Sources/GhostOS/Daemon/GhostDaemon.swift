@@ -221,6 +221,13 @@ public final class GhostDaemon {
         return stateManager.getTree(appName: app, depth: depth)
     }
 
+    /// Get the content tree (AXWebArea or focused window), skipping menus.
+    /// Use this for SmartResolver — it searches where users actually interact.
+    public func getContentTree(app: String? = nil, depth: Int = 15) -> ElementNode? {
+        stateManager.refresh()
+        return stateManager.getContentTree(appName: app, depth: depth)
+    }
+
     /// Execute an action without going through IPC
     public func execute(action: String, params: RPCParams) -> RPCResponse {
         let request = RPCRequest(method: action, params: params, id: 0)
@@ -233,10 +240,40 @@ public final class GhostDaemon {
         return stateManager.readContent(appName: app, maxDepth: maxDepth)
     }
 
+    /// Get rich context about the current app (for `ghost context`)
+    public func getContext(app: String? = nil) -> ContextInfo? {
+        stateManager.refresh()
+        return stateManager.getContext(appName: app)
+    }
+
     /// Deep find elements (skips menus, searches deeper)
     public func findElementsDeep(query: String, role: String? = nil, app: String? = nil, maxDepth: Int = 15) -> [ElementNode] {
         stateManager.refresh()
         return stateManager.findElementsDeep(query: query, role: role, appName: app, maxDepth: maxDepth)
+    }
+
+    // MARK: - Smart Actions (AX-native first)
+
+    /// Smart click — AX-native first, synthetic fallback, returns context
+    public func smartClick(query: String, role: String? = nil, app: String? = nil) -> ActionResult {
+        stateManager.refresh()
+        return actionExecutor.smartClick(query: query, role: role, appName: app)
+    }
+
+    /// Smart type — setValue first, typeText fallback, returns context
+    public func smartType(text: String, target: String? = nil, role: String? = nil, app: String? = nil) -> ActionResult {
+        stateManager.refresh()
+        return actionExecutor.smartType(text: text, target: target, role: role, appName: app)
+    }
+
+    /// Press key with context
+    public func pressWithContext(key: String, app: String? = nil) -> ActionResult {
+        return actionExecutor.pressWithContext(key: key, appName: app)
+    }
+
+    /// Hotkey with context
+    public func hotkeyWithContext(keys: [String], app: String? = nil) -> ActionResult {
+        return actionExecutor.hotkeyWithContext(keys: keys, appName: app)
     }
 
     /// Check accessibility permissions
