@@ -26,77 +26,118 @@ public final class ActionExecutor {
     public func smartClick(query: String, role: String? = nil, appName: String? = nil) -> ActionResult {
         stateManager.refresh()
 
-        // 1. Find the live element
-        guard let element = stateManager.findLiveElement(query: query, role: role, appName: appName) else {
-            return ActionResult(
-                success: false,
-                description: "No element matching '\(query)'\(appName.map { " in \($0)" } ?? "")",
-                method: "none",
-                context: stateManager.getContext(appName: appName)
-            )
-        }
-
-        let label = element.title() ?? element.descriptionText() ?? query
+        // 1. Find and resolve the target element
+        let (target, failure) = resolveClickTarget(query: query, role: role, appName: appName)
+        guard let target = target else { return failure! }
 
         // 2. Try AX-native press (no focus needed, works on background apps)
-        // Capture pre-action state to detect if AX press actually did something
         let preContext = stateManager.getContext(appName: appName)
         do {
-            try element.performAction(.press)
-            // Brief pause for the app to react
-            usleep(300_000) // 300ms
+            try target.element.performAction(.press)
+            usleep(300_000) // 300ms for app to react
             stateManager.refresh()
             let postContext = stateManager.getContext(appName: appName)
 
-            // Check if something actually changed (focused element, window title, URL)
-            let changed = contextDidChange(pre: preContext, post: postContext)
-            if changed {
+            if contextDidChange(pre: preContext, post: postContext) {
                 return ActionResult(
                     success: true,
-                    description: "Pressed '\(label)' via AX-native",
+                    description: "Pressed '\(target.label)' via AX-native",
                     method: "ax-native",
                     context: postContext
                 )
             }
             // AX press "succeeded" but nothing changed — fall through to synthetic
-            // This happens with Chrome web content buttons that silently accept AX press
         } catch {
             // AX-native threw — fall through to synthetic
         }
 
         // 3. Fallback: auto-focus + synthetic click at element center
-        if let appName = appName {
-            autoFocus(appName: appName)
-        }
+        if let appName = appName { autoFocus(appName: appName) }
 
-        if let pos = element.position(), let size = element.size() {
-            let center = CGPoint(x: pos.x + size.width / 2, y: pos.y + size.height / 2)
-            do {
-                try InputDriver.click(at: center)
-                usleep(150_000)
-                stateManager.refresh()
-                let ctx = stateManager.getContext(appName: appName)
-                return ActionResult(
-                    success: true,
-                    description: "Clicked '\(label)' at (\(Int(center.x)),\(Int(center.y))) — synthetic fallback",
-                    method: "synthetic",
-                    context: ctx
-                )
-            } catch {
-                return ActionResult(
-                    success: false,
-                    description: "Click failed for '\(label)': \(error)",
-                    method: "synthetic",
-                    context: stateManager.getContext(appName: appName)
-                )
-            }
+        do {
+            try InputDriver.click(at: target.center)
+            usleep(150_000)
+            stateManager.refresh()
+            return ActionResult(
+                success: true,
+                description: "Clicked '\(target.label)' at (\(Int(target.center.x)),\(Int(target.center.y))) — synthetic fallback",
+                method: "synthetic",
+                context: stateManager.getContext(appName: appName)
+            )
+        } catch {
+            return ActionResult(
+                success: false,
+                description: "Click failed for '\(target.label)': \(error)",
+                method: "synthetic",
+                context: stateManager.getContext(appName: appName)
+            )
         }
+    }
 
-        // 4. Element found but no position — can't click
+    // MARK: - Double-Click
+
+    /// Smart double-click — find element and double-click it.
+    /// Uses synthetic double-click (two rapid CGEvents). AX has no native double-click.
+    public func smartDoubleClick(query: String, role: String? = nil, appName: String? = nil) -> ActionResult {
+        stateManager.refresh()
+
+        let (target, failure) = resolveClickTarget(query: query, role: role, appName: appName)
+        guard let target = target else { return failure! }
+
+        if let appName = appName { autoFocus(appName: appName) }
+
+        let c = target.center
+        let mouseDown1 = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: c, mouseButton: .left)
+        let mouseUp1 = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: c, mouseButton: .left)
+        let mouseDown2 = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: c, mouseButton: .left)
+        let mouseUp2 = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: c, mouseButton: .left)
+
+        mouseDown1?.setIntegerValueField(.mouseEventClickState, value: 1)
+        mouseUp1?.setIntegerValueField(.mouseEventClickState, value: 1)
+        mouseDown2?.setIntegerValueField(.mouseEventClickState, value: 2)
+        mouseUp2?.setIntegerValueField(.mouseEventClickState, value: 2)
+
+        mouseDown1?.post(tap: .cghidEventTap)
+        mouseUp1?.post(tap: .cghidEventTap)
+        usleep(50_000) // 50ms between clicks
+        mouseDown2?.post(tap: .cghidEventTap)
+        mouseUp2?.post(tap: .cghidEventTap)
+
+        usleep(200_000)
+        stateManager.refresh()
         return ActionResult(
-            success: false,
-            description: "Found '\(label)' but it has no screen position",
-            method: "none",
+            success: true,
+            description: "Double-clicked '\(target.label)' at (\(Int(c.x)),\(Int(c.y)))",
+            method: "synthetic",
+            context: stateManager.getContext(appName: appName)
+        )
+    }
+
+    // MARK: - Right-Click
+
+    /// Smart right-click — find element and right-click it (opens context menu).
+    public func smartRightClick(query: String, role: String? = nil, appName: String? = nil) -> ActionResult {
+        stateManager.refresh()
+
+        let (target, failure) = resolveClickTarget(query: query, role: role, appName: appName)
+        guard let target = target else { return failure! }
+
+        if let appName = appName { autoFocus(appName: appName) }
+
+        let c = target.center
+        let mouseDown = CGEvent(mouseEventSource: nil, mouseType: .rightMouseDown, mouseCursorPosition: c, mouseButton: .right)
+        let mouseUp = CGEvent(mouseEventSource: nil, mouseType: .rightMouseUp, mouseCursorPosition: c, mouseButton: .right)
+
+        mouseDown?.post(tap: .cghidEventTap)
+        usleep(50_000)
+        mouseUp?.post(tap: .cghidEventTap)
+
+        usleep(300_000) // Context menus take a moment
+        stateManager.refresh()
+        return ActionResult(
+            success: true,
+            description: "Right-clicked '\(target.label)' at (\(Int(c.x)),\(Int(c.y)))",
+            method: "synthetic",
             context: stateManager.getContext(appName: appName)
         )
     }
@@ -477,6 +518,60 @@ public final class ActionExecutor {
         } catch {
             return (false, "Click failed: \(error)")
         }
+    }
+
+    // MARK: - Click Target Resolution (shared by all click variants)
+
+    /// Resolved click target — element + label + center point.
+    /// Shared by smartClick, smartDoubleClick, smartRightClick to avoid code duplication.
+    private struct ClickTarget {
+        let element: Element
+        let label: String
+        let center: CGPoint
+    }
+
+    /// Find an element, resolve its label (with raw AXValue fallback for Chrome),
+    /// and compute its center point. Returns nil with appropriate ActionResult if not found.
+    private func resolveClickTarget(
+        query: String, role: String?, appName: String?
+    ) -> (target: ClickTarget?, failureResult: ActionResult?) {
+        guard let element = stateManager.findLiveElement(query: query, role: role, appName: appName) else {
+            return (nil, ActionResult(
+                success: false,
+                description: "No element matching '\(query)'\(appName.map { " in \($0)" } ?? "")",
+                method: "none",
+                context: stateManager.getContext(appName: appName)
+            ))
+        }
+
+        let label = resolveLabel(element, fallback: query)
+
+        guard let pos = element.position(), let size = element.size(),
+              size.width > 0 && size.height > 0 else {
+            return (nil, ActionResult(
+                success: false,
+                description: "Found '\(label)' but it has no screen position",
+                method: "none",
+                context: stateManager.getContext(appName: appName)
+            ))
+        }
+
+        let center = CGPoint(x: pos.x + size.width / 2, y: pos.y + size.height / 2)
+        return (ClickTarget(element: element, label: label, center: center), nil)
+    }
+
+    /// Resolve an element's display label: title → descriptionText → raw AXValue → fallback.
+    /// Handles Chrome's AXStaticText where title/desc are empty but AXValue has the text.
+    private func resolveLabel(_ element: Element, fallback: String) -> String {
+        if let title = element.title(), !title.isEmpty { return title }
+        if let desc = element.descriptionText(), !desc.isEmpty { return desc }
+        // Raw AXValue fallback for Chrome elements
+        var rawVal: CFTypeRef?
+        if AXUIElementCopyAttributeValue(element.underlyingElement, kAXValueAttribute as CFString, &rawVal) == .success,
+           let str = rawVal as? String, !str.isEmpty {
+            return String(str.prefix(100))
+        }
+        return fallback
     }
 
     // MARK: - Private Helpers

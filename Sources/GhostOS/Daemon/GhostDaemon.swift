@@ -260,6 +260,18 @@ public final class GhostDaemon {
         return actionExecutor.smartClick(query: query, role: role, appName: app)
     }
 
+    /// Smart double-click — find element and double-click
+    public func smartDoubleClick(query: String, role: String? = nil, app: String? = nil) -> ActionResult {
+        stateManager.refresh()
+        return actionExecutor.smartDoubleClick(query: query, role: role, appName: app)
+    }
+
+    /// Smart right-click — find element and right-click (context menu)
+    public func smartRightClick(query: String, role: String? = nil, app: String? = nil) -> ActionResult {
+        stateManager.refresh()
+        return actionExecutor.smartRightClick(query: query, role: role, appName: app)
+    }
+
     /// Smart type — setValue first, typeText fallback, returns context
     public func smartType(text: String, target: String? = nil, role: String? = nil, app: String? = nil) -> ActionResult {
         stateManager.refresh()

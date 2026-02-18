@@ -325,29 +325,44 @@ func handleClick(_ args: [String]) async {
         return
     }
 
-    // Label mode: ghost click "Compose" --app Chrome
+    // Label mode: ghost click "Compose" --app Chrome [--double] [--right]
     let appName = flagValue(args, flag: "--app")
+    let isDouble = args.contains("--double")
+    let isRight = args.contains("--right")
     let flagValues: Set<String> = Set(
         ["--app"].compactMap { flagValue(args, flag: $0) }
     )
     let target = args.first(where: { !$0.hasPrefix("-") && !flagValues.contains($0) }) ?? ""
     guard !target.isEmpty else {
-        print("Usage: ghost click <label> [--app name] or ghost click --at x,y")
+        print("Usage: ghost click <label> [--app name] [--double] [--right] or ghost click --at x,y")
         return
     }
 
+    // Determine which click variant
+    let method: String
+    if isDouble { method = "smartDoubleClick" }
+    else if isRight { method = "smartRightClick" }
+    else { method = "smartClick" }
+
     // Try daemon first
     if let response = trySendToDaemon(
-        method: "smartClick",
+        method: method,
         params: RPCParams(target: target, app: appName)
     ) {
         printResult(response)
         return
     }
 
-    // Direct mode: smart click with AX-native first strategy
+    // Direct mode
     let daemon = directDaemon()
-    let result = daemon.smartClick(query: target, app: appName)
+    let result: ActionResult
+    if isDouble {
+        result = daemon.smartDoubleClick(query: target, app: appName)
+    } else if isRight {
+        result = daemon.smartRightClick(query: target, app: appName)
+    } else {
+        result = daemon.smartClick(query: target, app: appName)
+    }
     printActionResult(result)
 }
 
@@ -839,6 +854,8 @@ func printUsage() {
       ghost read --app <name>     Read content from specific app
       ghost read --limit <n>      Limit output to first n items (for AI agents)
       ghost click <label>         Smart click — find best match and click it
+      ghost click <label> --double  Double-click (select word, open file)
+      ghost click <label> --right   Right-click (context menu)
       ghost click --at x,y        Click at exact coordinates
       ghost type <text>           Type text at current focus
       ghost type <text> --into <field>  Find field first, then type

@@ -68,6 +68,10 @@ public final class RPCHandler {
             return handleGetDiff(id: id)
         case "smartClick":
             return handleSmartClick(params: params, id: id)
+        case "smartDoubleClick":
+            return handleSmartDoubleClick(params: params, id: id)
+        case "smartRightClick":
+            return handleSmartRightClick(params: params, id: id)
         case "smartType":
             return handleSmartType(params: params, id: id)
         case "getContext":
@@ -250,6 +254,22 @@ public final class RPCHandler {
             return .success(.actionResult(result), id: id)
         }
         return .failure(.notFound(result.description), id: id)
+    }
+
+    private func handleSmartDoubleClick(params: RPCParams?, id: Int) -> RPCResponse {
+        guard let query = params?.target ?? params?.query else {
+            return .failure(.invalidParams("'target' or 'query' required"), id: id)
+        }
+        let result = actionExecutor.smartDoubleClick(query: query, role: params?.role, appName: params?.app)
+        return result.success ? .success(.actionResult(result), id: id) : .failure(.notFound(result.description), id: id)
+    }
+
+    private func handleSmartRightClick(params: RPCParams?, id: Int) -> RPCResponse {
+        guard let query = params?.target ?? params?.query else {
+            return .failure(.invalidParams("'target' or 'query' required"), id: id)
+        }
+        let result = actionExecutor.smartRightClick(query: query, role: params?.role, appName: params?.app)
+        return result.success ? .success(.actionResult(result), id: id) : .failure(.notFound(result.description), id: id)
     }
 
     private func handleSmartType(params: RPCParams?, id: Int) -> RPCResponse {
