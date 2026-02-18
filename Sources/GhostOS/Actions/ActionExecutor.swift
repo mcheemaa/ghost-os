@@ -162,11 +162,13 @@ public final class ActionExecutor {
                 if let element = stateManager.findLiveElement(query: target, role: nil, appName: appName) {
                     return typeIntoElement(element, text: text, label: target, appName: appName)
                 }
+                let screenshot = captureDebugScreenshot(appName: appName)
                 return ActionResult(
                     success: false,
                     description: "No field matching '\(target)'\(appName.map { " in \($0)" } ?? "")",
                     method: "none",
-                    context: stateManager.getContext(appName: appName)
+                    context: stateManager.getContext(appName: appName),
+                    screenshot: screenshot
                 )
             }
             return typeIntoElement(element, text: text, label: target, appName: appName)
@@ -467,11 +469,13 @@ public final class ActionExecutor {
         query: String, role: String?, appName: String?
     ) -> (target: ClickTarget?, failureResult: ActionResult?) {
         guard let element = stateManager.findLiveElement(query: query, role: role, appName: appName) else {
+            let screenshot = captureDebugScreenshot(appName: appName)
             return (nil, ActionResult(
                 success: false,
                 description: "No element matching '\(query)'\(appName.map { " in \($0)" } ?? "")",
                 method: "none",
-                context: stateManager.getContext(appName: appName)
+                context: stateManager.getContext(appName: appName),
+                screenshot: screenshot
             ))
         }
 
@@ -479,11 +483,13 @@ public final class ActionExecutor {
 
         guard let pos = element.position(), let size = element.size(),
               size.width > 0 && size.height > 0 else {
+            let screenshot = captureDebugScreenshot(appName: appName)
             return (nil, ActionResult(
                 success: false,
                 description: "Found '\(label)' but it has no screen position",
                 method: "none",
-                context: stateManager.getContext(appName: appName)
+                context: stateManager.getContext(appName: appName),
+                screenshot: screenshot
             ))
         }
 
@@ -503,6 +509,38 @@ public final class ActionExecutor {
             return String(str.prefix(100))
         }
         return fallback
+    }
+
+    // MARK: - Debug Screenshot on Failure
+
+    /// Capture a screenshot for debugging when an action fails.
+    /// Returns nil if screenshot can't be captured (no app found, no permission, etc.).
+    /// Uses RunLoop bridge to call async ScreenCaptureKit from sync context.
+    private func captureDebugScreenshot(appName: String?) -> ScreenshotResult? {
+        guard ScreenCapture.hasPermission() else { return nil }
+
+        // Resolve PID from app name (or frontmost)
+        let pid: pid_t
+        if let name = appName {
+            guard let app = stateManager.getState().apps.first(where: {
+                $0.name.localizedCaseInsensitiveContains(name)
+            }) else { return nil }
+            pid = app.pid
+        } else {
+            guard let front = stateManager.getState().frontmostApp else { return nil }
+            pid = front.pid
+        }
+
+        var result: ScreenshotResult?
+        var done = false
+        Task {
+            result = await ScreenCapture.captureWindow(pid: pid)
+            done = true
+        }
+        while !done {
+            RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.01))
+        }
+        return result
     }
 
     // MARK: - Private Helpers

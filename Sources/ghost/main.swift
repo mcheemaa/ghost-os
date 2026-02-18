@@ -906,6 +906,15 @@ func printActionResult(_ result: ActionResult) {
         print("")
         print(ctx.summary())
     }
+    // Save debug screenshot on failure
+    if let screenshot = result.screenshot {
+        let timestamp = Int(Date().timeIntervalSince1970)
+        let path = "/tmp/ghost-debug-\(timestamp).png"
+        if let data = Data(base64Encoded: screenshot.base64PNG) {
+            try? data.write(to: URL(fileURLWithPath: path))
+            print("  Debug screenshot: \(path) (\(screenshot.width)x\(screenshot.height))")
+        }
+    }
     if !result.success {
         exit(1)
     }
