@@ -321,21 +321,28 @@ public final class ActionExecutor {
     ///   - elementGone: readContent does NOT contain value
     ///   - urlChanged: ctx.url differs from initial
     ///   - titleChanged: ctx.window differs from initial
+    /// - Parameter baseline: Optional pre-action context for "changed" conditions.
+    ///   If provided, urlChanged/titleChanged compare against this baseline instead of
+    ///   capturing state at wait-start. This prevents the race condition where navigation
+    ///   completes before wait begins (baseline was captured before the action).
     public func wait(
         condition: String,
         value: String?,
         timeout: Double = 10.0,
         interval: Double = 0.5,
-        appName: String? = nil
+        appName: String? = nil,
+        baseline: ContextInfo? = nil
     ) -> ActionResult {
         let deadline = Date().addingTimeInterval(timeout)
         let intervalUs = UInt32(interval * 1_000_000)
 
-        // Capture initial state for "changed" conditions
-        stateManager.refresh()
-        let initialContext = stateManager.getContext(appName: appName)
-        let initialUrl = initialContext?.url
-        let initialTitle = initialContext?.window
+        // Use provided baseline for "changed" conditions, or capture now
+        let baselineContext = baseline ?? {
+            stateManager.refresh()
+            return stateManager.getContext(appName: appName)
+        }()
+        let initialUrl = baselineContext?.url
+        let initialTitle = baselineContext?.window
 
         while Date() < deadline {
             stateManager.refresh()
@@ -408,51 +415,12 @@ public final class ActionExecutor {
         )
     }
 
-    // MARK: - Backward-compatible methods (still used by some paths)
+    // MARK: - Coordinate-based & utility actions
 
     /// Click at specific coordinates (synthetic only, no AX-native equivalent)
     public func click(at point: CGPoint) throws -> String {
         try InputDriver.click(at: point)
         return "Clicked at (\(Int(point.x)), \(Int(point.y)))"
-    }
-
-    /// Click an element by label (legacy — uses synthetic click)
-    public func click(target: String, appName: String? = nil) throws -> String {
-        let elements = stateManager.findElements(query: target, role: nil, appName: appName)
-        guard let element = elements.first else {
-            throw GhostError.elementNotFound("No element matching '\(target)'")
-        }
-        guard let pos = element.position else {
-            throw GhostError.noPosition("Element '\(target)' has no screen position")
-        }
-        let center = CGPoint(
-            x: pos.x + (element.size?.width ?? 0) / 2,
-            y: pos.y + (element.size?.height ?? 0) / 2
-        )
-        try InputDriver.click(at: center)
-        return "Clicked '\(element.label ?? target)' at (\(Int(center.x)), \(Int(center.y)))"
-    }
-
-    /// Type text at the current focus (legacy)
-    public func type(text: String, delay: TimeInterval = 0.01) throws -> String {
-        try Element.typeText(text, delay: delay)
-        return "Typed \(text.count) characters"
-    }
-
-    /// Press a special key (legacy)
-    public func press(key: String) throws -> String {
-        guard let specialKey = SpecialKey(rawValue: key.lowercased()) else {
-            throw GhostError.invalidKey("Unknown key: '\(key)'. Valid: return, tab, escape, space, delete, up, down, left, right, etc.")
-        }
-        try InputDriver.tapKey(specialKey)
-        return "Pressed \(key)"
-    }
-
-    /// Perform a keyboard shortcut (legacy)
-    public func hotkey(keys: [String]) throws -> String {
-        try InputDriver.hotkey(keys: keys)
-        clearModifierFlags()
-        return "Hotkey \(keys.joined(separator: "+"))"
     }
 
     /// Scroll in a direction
@@ -481,43 +449,6 @@ public final class ActionExecutor {
         app.activate()
         stateManager.refreshFocus()
         return "Focused \(app.localizedName ?? appName)"
-    }
-
-    // MARK: - Legacy Smart Actions (deprecated — kept for transition)
-
-    /// Smart click on ElementNode tree (deprecated — use smartClick(query:role:appName:))
-    public func smartClickLegacy(
-        query: String,
-        role: String? = nil,
-        in root: ElementNode
-    ) -> (success: Bool, description: String) {
-        let resolver = SmartResolver()
-        let matches = resolver.resolve(query: query, role: role, in: root, limit: 5)
-
-        guard let best = matches.first else {
-            return (false, "No match for '\(query)'")
-        }
-        guard best.score >= 60 else {
-            let label = best.node.label ?? best.node.id
-            return (false, "No confident match for '\(query)'. Best: '\(label)' (score: \(best.score), \(best.matchReason))")
-        }
-        guard let pos = best.node.position else {
-            let label = best.node.label ?? best.node.id
-            return (false, "Found '\(label)' but it has no screen position")
-        }
-
-        let center = CGPoint(
-            x: pos.x + (best.node.size?.width ?? 0) / 2,
-            y: pos.y + (best.node.size?.height ?? 0) / 2
-        )
-
-        do {
-            try InputDriver.click(at: center)
-            let label = best.node.label ?? best.node.id
-            return (true, "Clicked '\(label)' at (\(Int(center.x)), \(Int(center.y))) — \(best.matchReason)")
-        } catch {
-            return (false, "Click failed: \(error)")
-        }
     }
 
     // MARK: - Click Target Resolution (shared by all click variants)
@@ -627,25 +558,6 @@ public final class ActionExecutor {
         }
     }
 
-    private func findElementInTree(_ element: Element, query: String, depth: Int) -> Element? {
-        if depth <= 0 { return nil }
-
-        let title = element.title()
-        let desc = element.descriptionText()
-        if title?.localizedCaseInsensitiveContains(query) == true
-            || desc?.localizedCaseInsensitiveContains(query) == true
-        {
-            return element
-        }
-
-        guard let children = element.children() else { return nil }
-        for child in children {
-            if let found = findElementInTree(child, query: query, depth: depth - 1) {
-                return found
-            }
-        }
-        return nil
-    }
 }
 
 // MARK: - Error types

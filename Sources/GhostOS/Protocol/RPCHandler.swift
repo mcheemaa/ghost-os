@@ -129,55 +129,45 @@ public final class RPCHandler {
     }
 
     private func handleClick(params: RPCParams?, id: Int) -> RPCResponse {
-        do {
-            if let x = params?.x, let y = params?.y {
+        // Coordinate mode — stays synthetic, no element to find
+        if let x = params?.x, let y = params?.y {
+            do {
                 let msg = try actionExecutor.click(at: CGPoint(x: x, y: y))
                 return .success(.message(msg), id: id)
+            } catch {
+                return .failure(.notFound("\(error)"), id: id)
             }
-            guard let target = params?.target ?? params?.query else {
-                return .failure(.invalidParams("'target' or 'x'/'y' required"), id: id)
-            }
-            let msg = try actionExecutor.click(target: target, appName: params?.app)
-            return .success(.message(msg), id: id)
-        } catch {
-            return .failure(.notFound("\(error)"), id: id)
         }
+        // Target mode — delegate to smartClick for AX-native + context
+        guard let target = params?.target ?? params?.query else {
+            return .failure(.invalidParams("'target' or 'x'/'y' required"), id: id)
+        }
+        let result = actionExecutor.smartClick(query: target, role: params?.role, appName: params?.app)
+        return result.success ? .success(.actionResult(result), id: id) : .failure(.notFound(result.description), id: id)
     }
 
     private func handleType(params: RPCParams?, id: Int) -> RPCResponse {
         guard let text = params?.text else {
             return .failure(.invalidParams("'text' parameter required"), id: id)
         }
-        do {
-            let msg = try actionExecutor.type(text: text)
-            return .success(.message(msg), id: id)
-        } catch {
-            return .failure(.internalError("\(error)"), id: id)
-        }
+        let result = actionExecutor.smartType(text: text, target: params?.target, role: params?.role, appName: params?.app)
+        return result.success ? .success(.actionResult(result), id: id) : .failure(.notFound(result.description), id: id)
     }
 
     private func handlePress(params: RPCParams?, id: Int) -> RPCResponse {
         guard let key = params?.key else {
             return .failure(.invalidParams("'key' parameter required"), id: id)
         }
-        do {
-            let msg = try actionExecutor.press(key: key)
-            return .success(.message(msg), id: id)
-        } catch {
-            return .failure(.invalidParams("\(error)"), id: id)
-        }
+        let result = actionExecutor.pressWithContext(key: key, appName: params?.app)
+        return result.success ? .success(.actionResult(result), id: id) : .failure(.invalidParams(result.description), id: id)
     }
 
     private func handleHotkey(params: RPCParams?, id: Int) -> RPCResponse {
         guard let keys = params?.keys, !keys.isEmpty else {
             return .failure(.invalidParams("'keys' array required"), id: id)
         }
-        do {
-            let msg = try actionExecutor.hotkey(keys: keys)
-            return .success(.message(msg), id: id)
-        } catch {
-            return .failure(.internalError("\(error)"), id: id)
-        }
+        let result = actionExecutor.hotkeyWithContext(keys: keys, appName: params?.app)
+        return result.success ? .success(.actionResult(result), id: id) : .failure(.internalError(result.description), id: id)
     }
 
     private func handleScroll(params: RPCParams?, id: Int) -> RPCResponse {

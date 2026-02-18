@@ -289,8 +289,8 @@ public final class GhostDaemon {
     }
 
     /// Wait for a condition to be met
-    public func wait(condition: String, value: String?, timeout: Double = 10.0, interval: Double = 0.5, app: String? = nil) -> ActionResult {
-        return actionExecutor.wait(condition: condition, value: value, timeout: timeout, interval: interval, appName: app)
+    public func wait(condition: String, value: String?, timeout: Double = 10.0, interval: Double = 0.5, app: String? = nil, baseline: ContextInfo? = nil) -> ActionResult {
+        return actionExecutor.wait(condition: condition, value: value, timeout: timeout, interval: interval, appName: app, baseline: baseline)
     }
 
     /// Capture a screenshot of a window (async — uses ScreenCaptureKit)
