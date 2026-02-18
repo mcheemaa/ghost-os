@@ -219,9 +219,59 @@ Use the full path to the `ghost` binary (`/opt/homebrew/bin/ghost` for Homebrew 
 
 </details>
 
-## Things to Know
+## Troubleshooting
 
-Real issues from development. Not hypothetical.
+### MCP server shows "Failed to connect"
+
+Check the registered path:
+
+```bash
+claude mcp list
+```
+
+If the path to `ghost` is wrong (e.g. pointing to a project directory instead of `/opt/homebrew/bin/ghost`), fix it:
+
+```bash
+claude mcp remove ghost-os
+claude mcp add --transport stdio ghost-os -- /opt/homebrew/bin/ghost mcp
+```
+
+Verify it works:
+
+```bash
+claude mcp list   # should show ✓ Connected
+```
+
+### MCP server connects but tools need approval every time
+
+Ghost OS tools need to be allowed in your project's `.claude/settings.local.json`. Run `ghost setup` from your project directory to configure this automatically, or add it manually:
+
+```bash
+mkdir -p .claude
+cat > .claude/settings.local.json << 'EOF'
+{
+  "permissions": {
+    "allow": ["mcp__ghost-os__*"]
+  }
+}
+EOF
+```
+
+### `ghost setup` hangs at "Found: Claude Code"
+
+The Claude CLI may need login or first-run setup. Press Ctrl+C, run `claude` once to complete its setup, then run `ghost setup` again.
+
+### Test that everything works
+
+```bash
+ghost permissions              # Should say GRANTED
+ghost version                  # Should print version
+ghost state --summary          # Should list your running apps
+echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}' | ghost mcp
+                               # Should print JSON response
+```
+
+## Things to Know
 
 - **Chrome tabs are invisible.** Chromium doesn't expose tabs in the accessibility tree. Navigate by URL: `cmd,l` then type the URL.
 - **Web apps work from background, native apps need focus.** Chrome and Slack are readable without bringing them forward. Native macOS apps (Preview, GitHub Desktop) only show their menu bar until you focus them.
