@@ -16,6 +16,12 @@ public final class MCPServer {
     private let rpcHandler: RPCHandler
     private let instructions: String
 
+    /// Dedicated file handle for MCP protocol output (the real stdout).
+    /// We redirect stdout → stderr at init so any accidental print() from
+    /// anywhere (AXorcist, Swift runtime, libraries) goes to stderr.
+    /// Only explicit writes to this handle reach the MCP client.
+    private let mcpOutput: FileHandle
+
     /// Tools that switch focus to other apps — wrapped in focus-restore.
     private static let actionTools: Set<String> = [
         "ghost_click", "ghost_type", "ghost_press", "ghost_hotkey",
@@ -23,6 +29,13 @@ public final class MCPServer {
     ]
 
     public init() {
+        // Save the real stdout fd for MCP protocol, then redirect stdout → stderr.
+        // This ensures print() / Swift.print() / any library output goes to stderr,
+        // keeping the MCP protocol channel clean.
+        let savedFD = dup(STDOUT_FILENO)
+        dup2(STDERR_FILENO, STDOUT_FILENO)
+        self.mcpOutput = FileHandle(fileDescriptor: savedFD, closeOnDealloc: true)
+
         self.stateManager = StateManager()
         self.actionExecutor = ActionExecutor(stateManager: stateManager)
         self.rpcHandler = RPCHandler(stateManager: stateManager, actionExecutor: actionExecutor)
@@ -43,6 +56,13 @@ public final class MCPServer {
 
         stateManager.refresh()
         let state = stateManager.getState()
+
+        // Permission check: if no apps visible AND AXIsProcessTrusted fails, exit.
+        if state.apps.isEmpty && !AXIsProcessTrusted() {
+            log("ERROR: Accessibility permission not granted. Run `ghost setup` to configure.")
+            exit(1)
+        }
+
         log("Ready: \(state.apps.count) apps")
 
         while let message = readMessage() {
@@ -493,33 +513,7 @@ public final class MCPServer {
         return "(encoding failed)"
     }
 
-    // MARK: - Stdin/Stdout (Content-Length framing)
-
-    private func readMessage() -> [String: Any]? {
-        var contentLength = 0
-
-        // Read headers until empty line
-        while let line = readHeaderLine() {
-            if line.isEmpty { break }
-            if line.lowercased().hasPrefix("content-length:") {
-                let value = line.dropFirst(15).trimmingCharacters(in: .whitespaces)
-                contentLength = Int(value) ?? 0
-            }
-        }
-
-        guard contentLength > 0 else { return nil }
-
-        // Read body
-        guard let body = readBytes(count: contentLength) else { return nil }
-
-        // Parse JSON
-        guard let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any] else {
-            log("Failed to parse JSON message")
-            return nil
-        }
-
-        return json
-    }
+    // MARK: - Stdin/Stdout
 
     private func writeResponse(id: Any, result: [String: Any]) {
         let response: [String: Any] = [
@@ -541,24 +535,87 @@ public final class MCPServer {
         writeMessage(response)
     }
 
+    // MARK: - Low-level IO (raw POSIX read — bypasses C stdio buffering)
+
+    /// Auto-detected transport: .ndjson (line-delimited) or .contentLength (LSP-style).
+    /// Set on first message based on whether first byte is '{' or a header character.
+    private enum Transport { case ndjson, contentLength }
+    private var transport: Transport?
+
+    private func readMessage() -> [String: Any]? {
+        // Read first line to detect transport format
+        guard let firstLine = readLine() else { return nil }
+
+        // Auto-detect on first message
+        if transport == nil {
+            transport = firstLine.hasPrefix("{") ? .ndjson : .contentLength
+            log("Transport: \(transport == .ndjson ? "NDJSON" : "Content-Length")")
+        }
+
+        switch transport! {
+        case .ndjson:
+            // firstLine IS the JSON message
+            let line = firstLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !line.isEmpty else { return readMessage() }  // skip blank lines
+            guard let data = line.data(using: .utf8),
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                log("Failed to parse NDJSON line")
+                return readMessage()  // skip malformed lines
+            }
+            return json
+
+        case .contentLength:
+            // firstLine should be "Content-Length: N", read until blank line, then body
+            var contentLength = 0
+            if firstLine.lowercased().hasPrefix("content-length:") {
+                let value = firstLine.dropFirst(15).trimmingCharacters(in: .whitespaces)
+                contentLength = Int(value) ?? 0
+            }
+            // Read remaining headers until blank line
+            while let line = readLine() {
+                if line.isEmpty { break }
+                if line.lowercased().hasPrefix("content-length:") {
+                    let value = line.dropFirst(15).trimmingCharacters(in: .whitespaces)
+                    contentLength = Int(value) ?? 0
+                }
+            }
+            guard contentLength > 0 else { return nil }
+            guard let body = readBytes(count: contentLength) else { return nil }
+            guard let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any] else {
+                log("Failed to parse JSON body")
+                return nil
+            }
+            return json
+        }
+    }
+
     private func writeMessage(_ obj: [String: Any]) {
         guard let data = try? JSONSerialization.data(withJSONObject: obj) else {
             log("Failed to serialize response")
             return
         }
-        let header = "Content-Length: \(data.count)\r\n\r\n"
-        FileHandle.standardOutput.write(Data(header.utf8))
-        FileHandle.standardOutput.write(data)
+
+        switch transport ?? .contentLength {
+        case .ndjson:
+            // Write JSON + newline
+            mcpOutput.write(data)
+            mcpOutput.write(Data([0x0A]))  // \n
+        case .contentLength:
+            let header = "Content-Length: \(data.count)\r\n\r\n"
+            mcpOutput.write(Data(header.utf8))
+            mcpOutput.write(data)
+        }
+
+        log("Sent \(data.count) bytes")
     }
 
-    // MARK: - Low-level IO
-
-    private func readHeaderLine() -> String? {
+    /// Read a single line from stdin (up to \n). Returns nil on EOF.
+    private func readLine() -> String? {
         var line = ""
         while true {
             var byte: UInt8 = 0
-            let read = fread(&byte, 1, 1, stdin)
-            guard read == 1 else { return nil }
+            let n = Darwin.read(STDIN_FILENO, &byte, 1)
+            guard n == 1 else { return nil }
             if byte == 0x0A {  // \n
                 if line.hasSuffix("\r") { line = String(line.dropLast()) }
                 return line
@@ -571,9 +628,9 @@ public final class MCPServer {
         var buffer = [UInt8](repeating: 0, count: count)
         var totalRead = 0
         while totalRead < count {
-            let read = fread(&buffer[totalRead], 1, count - totalRead, stdin)
-            guard read > 0 else { return nil }
-            totalRead += read
+            let n = Darwin.read(STDIN_FILENO, &buffer[totalRead], count - totalRead)
+            guard n > 0 else { return nil }
+            totalRead += n
         }
         return Data(buffer)
     }

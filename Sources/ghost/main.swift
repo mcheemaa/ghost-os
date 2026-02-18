@@ -143,15 +143,6 @@ func handleDaemon(_ args: [String]) async {
 
 @MainActor
 func handleMCP() async {
-    // Fail fast with stderr message — never trigger a system permission dialog
-    guard MCPServer.checkAccessibilityPermission() else {
-        FileHandle.standardError.write(
-            Data(
-                "Ghost OS requires Accessibility permission. Run `ghost setup` to configure.\n"
-                    .utf8))
-        exit(1)
-    }
-
     let server = MCPServer()
     server.run()
 }
