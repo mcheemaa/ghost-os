@@ -535,8 +535,8 @@ func handleWatch(_ args: [String]) async {
 @MainActor
 func handleRead(_ args: [String]) async {
     let appName = flagValue(args, flag: "--app")
-    let depthStr = flagValue(args, flag: "--depth")
-    let maxDepth = depthStr.flatMap(Int.init) ?? 20
+    let maxItemsStr = flagValue(args, flag: "--max-items")
+    let maxItems = maxItemsStr.flatMap(Int.init) ?? 500
     let limitStr = flagValue(args, flag: "--limit")
     let limit = limitStr.flatMap(Int.init)
     let useJSON = args.contains("--json")
@@ -544,7 +544,7 @@ func handleRead(_ args: [String]) async {
     // Try daemon first
     if let response = trySendToDaemon(
         method: "readContent",
-        params: RPCParams(app: appName, depth: maxDepth)
+        params: RPCParams(app: appName, depth: maxItems)
     ) {
         if !useJSON, case let .content(items) = response.result {
             let limited = limit != nil ? Array(items.prefix(limit!)) : items
@@ -560,7 +560,7 @@ func handleRead(_ args: [String]) async {
 
     // Direct mode
     let daemon = directDaemon()
-    let items = daemon.readContent(app: appName, maxDepth: maxDepth)
+    let items = daemon.readContent(app: appName, maxItems: maxItems)
     if items.isEmpty {
         print("No readable content found")
         return

@@ -483,9 +483,23 @@ public final class StateManager {
         return nil
     }
 
+    /// Roles that are layout-only containers — they don't carry semantic meaning
+    /// and shouldn't consume depth budget when empty. These are CSS scaffolding
+    /// that leaked into the accessibility tree (wrapper divs, layout containers, etc.).
+    private static let layoutRoles: Set<String> = [
+        "AXGroup", "AXGenericElement", "AXLayoutArea", "AXLayoutItem",
+        "AXScrollArea", "AXSplitGroup", "AXSection", "AXDiv",
+    ]
+
     /// Read content from an app — extracts all readable text in document order.
     /// Returns structured content items that an agent can understand.
-    public func readContent(appName: String? = nil, maxDepth: Int = 20) -> [ContentItem] {
+    ///
+    /// Uses **semantic depth** instead of DOM depth: empty layout containers (AXGroup
+    /// wrappers from CSS divs) don't consume depth budget. Only nodes with actual
+    /// content (text, buttons, headings, interactive elements) cost a depth point.
+    /// This lets us reach deeply nested content (Amazon products at 30+ DOM levels,
+    /// Slack messages, Gmail threads) with a modest depth budget of 25.
+    public func readContent(appName: String? = nil, maxItems: Int = 500, maxDepth: Int = 20) -> [ContentItem] {
         let targetApp = appName ?? currentState.frontmostApp?.name
         guard let app = targetApp else { return [] }
         guard let appInfo = currentState.apps.first(where: {
@@ -494,48 +508,90 @@ public final class StateManager {
 
         guard let contentRoot = findContentRoot(pid: appInfo.pid) else { return [] }
 
-        var items: [ContentItem] = []
-        var visited = Set<UInt>()
-        extractContent(contentRoot, depth: 0, maxDepth: maxDepth, items: &items, visited: &visited)
-        return items
+        var context = ContentExtractionContext(
+            maxItems: maxItems,
+            semanticDepthBudget: 25,
+            deadline: Date().addingTimeInterval(5.0) // safety time budget
+        )
+        extractContent(contentRoot, semanticDepth: 0, context: &context)
+        return context.items
     }
 
-    /// Recursively extract readable content from an element tree
+    /// Mutable context passed through content extraction to track limits.
+    private struct ContentExtractionContext {
+        var items: [ContentItem] = []
+        var visited: Set<UInt> = []
+        let maxItems: Int
+        let semanticDepthBudget: Int
+        let deadline: Date
+
+        var shouldStop: Bool {
+            items.count >= maxItems || Date() > deadline
+        }
+    }
+
+    /// Check if an element is a semantically empty layout container.
+    /// These are CSS wrapper divs that leaked into the AX tree — no title, no desc,
+    /// no value, not interactive. They should be "tunneled through" without costing
+    /// depth budget.
+    private func isEmptyLayoutContainer(role: String, title: String?, desc: String?, value: String?) -> Bool {
+        guard Self.layoutRoles.contains(role) else { return false }
+        let titleEmpty = title == nil || title!.isEmpty
+        let descEmpty = desc == nil || desc!.isEmpty
+        let valueEmpty = value == nil || value!.isEmpty
+        return titleEmpty && descEmpty && valueEmpty
+    }
+
+    /// Recursively extract readable content from an element tree.
+    /// Uses semantic depth: empty layout containers (AXGroup, etc.) are tunneled
+    /// through at zero cost. Only nodes with actual content consume depth budget.
+    /// Also limited by maxItems and a time budget as safety nets.
     private func extractContent(
         _ element: Element,
-        depth: Int,
-        maxDepth: Int,
-        items: inout [ContentItem],
-        visited: inout Set<UInt>
+        semanticDepth: Int,
+        context: inout ContentExtractionContext
     ) {
-        if depth > maxDepth { return }
+        if context.shouldStop { return }
+        if semanticDepth > context.semanticDepthBudget { return }
 
         // Cycle detection
         let hash = CFHash(element.underlyingElement)
-        guard !visited.contains(hash) else { return }
-        visited.insert(hash)
+        guard !context.visited.contains(hash) else { return }
+        context.visited.insert(hash)
 
         let role = element.role() ?? "Unknown"
 
         // Skip menus entirely
         if Self.skipRoles.contains(role) { return }
 
-        // Extract text from this element if it has content
+        // Extract text from this element
         let title = element.title()
         let desc = element.descriptionText()
-        var value = element.value().flatMap { v -> String? in
-            let s = String(describing: v).trimmingCharacters(in: .whitespacesAndNewlines)
-            return s.isEmpty || s == "nil" ? nil : s
+
+        // Read AXValue directly via raw API — AXorcist's generic value() returns nil
+        // for Chrome's AXStaticText due to Attribute<Any> type mismatch, but the raw
+        // AXUIElementCopyAttributeValue correctly returns the text as CFString.
+        var value: String? = nil
+        var rawVal: CFTypeRef?
+        if AXUIElementCopyAttributeValue(element.underlyingElement, kAXValueAttribute as CFString, &rawVal) == .success,
+           let cfVal = rawVal {
+            if let str = cfVal as? String, !str.isEmpty {
+                value = str
+            } else {
+                // Fallback: try String(describing:) for non-string value types
+                let s = String(describing: cfVal).trimmingCharacters(in: .whitespacesAndNewlines)
+                if !s.isEmpty && s != "nil" {
+                    value = s
+                }
+            }
         }
 
-        // For elements in web content (especially AXStaticText), text often lives in
-        // parameterized attributes. Chrome/Gmail return empty strings for title/desc/value
-        // but the actual text is accessible via visibleCharacterRange + stringForRange.
+        // If still no value, try parameterized text attributes
+        // (some elements store text only in visibleCharacterRange + stringForRange)
         let titleEmpty = title == nil || title!.isEmpty
         let descEmpty = desc == nil || desc!.isEmpty
         let valueEmpty = value == nil || value!.isEmpty
         if titleEmpty && descEmpty && valueEmpty {
-            // Try parameterized text attributes
             if let range = element.visibleCharacterRange(), range.length > 0 {
                 value = element.string(forRange: range)
             } else if let numChars = element.numberOfCharacters(), numChars > 0 {
@@ -543,6 +599,9 @@ public final class StateManager {
                 value = element.string(forRange: fullRange)
             }
         }
+
+        // Determine if this node is a semantically empty container (tunnel through it)
+        let isTunnel = isEmptyLayoutContainer(role: role, title: title, desc: desc, value: value)
 
         let text = title ?? desc
         let hasContent = (text != nil && !text!.isEmpty) || (value != nil && !value!.isEmpty)
@@ -555,9 +614,8 @@ public final class StateManager {
                 displayText = text ?? value ?? ""
             }
 
-            // Skip shallow AXGroup with long text (just aggregated children text)
-            // Deep groups (depth > 15) are likely real content (email body, etc.)
-            if role == "AXGroup" && displayText.count > 150 && depth < 15 {
+            // Skip shallow AXGroup with long text (aggregated children text)
+            if role == "AXGroup" && displayText.count > 150 && semanticDepth < 10 {
                 // Still recurse into children below
             } else {
             let contentType: String
@@ -581,22 +639,25 @@ public final class StateManager {
                 : displayText
 
             // Deduplicate: skip if the previous item has the exact same text
-            let isDuplicate = items.last.map { $0.text == truncated } ?? false
+            let isDuplicate = context.items.last.map { $0.text == truncated } ?? false
             if !isDuplicate && !truncated.isEmpty {
-                items.append(ContentItem(
+                context.items.append(ContentItem(
                     type: contentType,
                     text: truncated,
                     role: role,
-                    depth: depth
+                    depth: semanticDepth
                 ))
             }
             } // end else (not long AXGroup)
         }
 
         // Recurse into children
+        // Semantic depth: empty layout containers cost 0, everything else costs 1
+        let childDepth = isTunnel ? semanticDepth : semanticDepth + 1
         guard let children = element.children() else { return }
         for child in children.prefix(100) {
-            extractContent(child, depth: depth + 1, maxDepth: maxDepth, items: &items, visited: &visited)
+            if context.shouldStop { return }
+            extractContent(child, semanticDepth: childDepth, context: &context)
         }
     }
 
@@ -655,9 +716,15 @@ public final class StateManager {
             let role = focused.role() ?? "Unknown"
             let label = focused.title() ?? focused.descriptionText()
             var val: String? = nil
-            if let v = focused.value() {
-                let s = String(describing: v).trimmingCharacters(in: .whitespacesAndNewlines)
-                if !s.isEmpty && s != "nil" { val = s }
+            var focusedRawVal: CFTypeRef?
+            if AXUIElementCopyAttributeValue(focused.underlyingElement, kAXValueAttribute as CFString, &focusedRawVal) == .success,
+               let cfVal = focusedRawVal {
+                if let str = cfVal as? String, !str.isEmpty {
+                    val = str
+                } else {
+                    let s = String(describing: cfVal).trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !s.isEmpty && s != "nil" { val = s }
+                }
             }
             let editable = focused.isEditable() ?? false
             focusInfo = FocusInfo(role: role, label: label, value: val, isEditable: editable)

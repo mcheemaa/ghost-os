@@ -235,9 +235,9 @@ public final class GhostDaemon {
     }
 
     /// Read content from an app (for `ghost read`)
-    public func readContent(app: String? = nil, maxDepth: Int = 20) -> [ContentItem] {
+    public func readContent(app: String? = nil, maxItems: Int = 500) -> [ContentItem] {
         stateManager.refresh()
-        return stateManager.readContent(appName: app, maxDepth: maxDepth)
+        return stateManager.readContent(appName: app, maxItems: maxItems)
     }
 
     /// Get rich context about the current app (for `ghost context`)

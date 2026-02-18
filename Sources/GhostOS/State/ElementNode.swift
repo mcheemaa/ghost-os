@@ -120,13 +120,20 @@ extension ElementNode {
         let label = title ?? desc
         let roleDesc = element.roleDescription()
 
-        // Value — try to get a string representation
+        // Value — read AXValue directly via raw API.
+        // AXorcist's generic value() returns nil for Chrome AXStaticText due to
+        // Attribute<Any> type mismatch, but raw AXUIElementCopyAttributeValue works.
         var valueStr: String? = nil
-        if let v = element.value() {
-            let s = String(describing: v).trimmingCharacters(in: .whitespacesAndNewlines)
-            // Filter unhelpful values
-            if !s.isEmpty && s != "nil" && !(s == "0" && role != "AXSlider") {
-                valueStr = s.count > 200 ? String(s.prefix(200)) + "..." : s
+        var rawValueRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(element.underlyingElement, kAXValueAttribute as CFString, &rawValueRef) == .success,
+           let cfVal = rawValueRef {
+            if let str = cfVal as? String, !str.isEmpty {
+                valueStr = str.count > 200 ? String(str.prefix(200)) + "..." : str
+            } else {
+                let s = String(describing: cfVal).trimmingCharacters(in: .whitespacesAndNewlines)
+                if !s.isEmpty && s != "nil" && !(s == "0" && role != "AXSlider") {
+                    valueStr = s.count > 200 ? String(s.prefix(200)) + "..." : s
+                }
             }
         }
 

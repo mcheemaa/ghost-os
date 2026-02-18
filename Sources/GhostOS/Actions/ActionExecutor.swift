@@ -159,10 +159,14 @@ public final class ActionExecutor {
             let ok = element.setValue(text, forAttribute: "AXValue")
             if ok {
                 usleep(150_000)
-                // Verify: read the value back to check if it actually took
-                let readBack = element.value().flatMap { v -> String? in
-                    let s = String(describing: v).trimmingCharacters(in: .whitespacesAndNewlines)
-                    return s.isEmpty || s == "nil" ? nil : s
+                // Verify: read AXValue back directly to check if it actually took
+                var readBackRef: CFTypeRef?
+                let readBack: String?
+                if AXUIElementCopyAttributeValue(element.underlyingElement, kAXValueAttribute as CFString, &readBackRef) == .success,
+                   let str = readBackRef as? String, !str.isEmpty {
+                    readBack = str
+                } else {
+                    readBack = nil
                 }
                 if let readBack = readBack, readBack.contains(text.prefix(10)) {
                     stateManager.refresh()

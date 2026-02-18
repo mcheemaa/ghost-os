@@ -201,7 +201,7 @@ public final class RPCHandler {
 
     private func handleReadContent(params: RPCParams?, id: Int) -> RPCResponse {
         stateManager.refresh()
-        let items = stateManager.readContent(appName: params?.app, maxDepth: params?.depth ?? 20)
+        let items = stateManager.readContent(appName: params?.app, maxItems: params?.depth ?? 500)
         if items.isEmpty {
             return .failure(.notFound("No readable content found"), id: id)
         }
