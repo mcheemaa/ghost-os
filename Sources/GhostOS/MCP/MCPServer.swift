@@ -1,8 +1,12 @@
 // MCPServer.swift — Model Context Protocol server for Ghost OS
 //
-// Speaks MCP JSON-RPC over stdin/stdout with Content-Length framing.
-// Routes tool calls through RPCHandler. Action tools are wrapped in
-// focus-restore so the caller's app stays frontmost.
+// Speaks MCP JSON-RPC over stdin/stdout. Auto-detects transport format:
+// NDJSON (Claude Desktop) or Content-Length framing (LSP-style clients).
+// Routes tool calls through RPCHandler.
+//
+// stdout is redirected to stderr at init so any accidental print() from
+// libraries can never corrupt the protocol. MCP output goes through a
+// saved fd pointing to the original stdout pipe.
 //
 // Usage: ghost mcp (spawned by Claude Desktop or Claude Code)
 
@@ -22,10 +26,10 @@ public final class MCPServer {
     /// Only explicit writes to this handle reach the MCP client.
     private let mcpOutput: FileHandle
 
-    /// Tools that switch focus to other apps — wrapped in focus-restore.
-    private static let actionTools: Set<String> = [
-        "ghost_click", "ghost_type", "ghost_press", "ghost_hotkey",
-        "ghost_scroll", "ghost_focus", "ghost_run",
+    /// Synthetic input tools that need the target app focused before executing.
+    /// When the agent includes `app`, we auto-focus before dispatching.
+    private static let syntheticTools: Set<String> = [
+        "ghost_press", "ghost_hotkey", "ghost_scroll",
     ]
 
     public init() {
@@ -133,31 +137,17 @@ public final class MCPServer {
             return errorContent("Unknown tool: \(toolName)")
         }
 
-        let response: RPCResponse
-        if Self.actionTools.contains(toolName) {
-            response = withFocusRestore {
-                let request = RPCRequest(method: method, params: rpcParams, id: 0)
-                return self.rpcHandler.dispatch(request)
-            }
-        } else {
-            let request = RPCRequest(method: method, params: rpcParams, id: 0)
-            response = rpcHandler.dispatch(request)
+        // Synthetic input tools (press, hotkey, scroll) send events to the
+        // frontmost app. When the agent includes `app`, auto-focus it first.
+        if Self.syntheticTools.contains(toolName), let app = str(arguments, "app") {
+            _ = try? actionExecutor.focus(appName: app)
+            usleep(200_000)  // 200ms for app activation
         }
+
+        let request = RPCRequest(method: method, params: rpcParams, id: 0)
+        let response = rpcHandler.dispatch(request)
 
         return formatResponse(response)
-    }
-
-    // MARK: - Focus Restore
-
-    /// Capture the frontmost app before an action, restore it after.
-    private func withFocusRestore(_ block: () -> RPCResponse) -> RPCResponse {
-        stateManager.refresh()
-        let callingApp = stateManager.getState().frontmostApp?.name
-        let response = block()
-        if let callingApp = callingApp {
-            _ = try? actionExecutor.focus(appName: callingApp)
-        }
-        return response
     }
 
     // MARK: - Tool to RPC Mapping
@@ -258,6 +248,7 @@ public final class MCPServer {
             return (
                 "scroll",
                 RPCParams(
+                    app: str(arguments, "app"),
                     x: dbl(arguments, "x"),
                     y: dbl(arguments, "y"),
                     direction: str(arguments, "direction"),
@@ -646,25 +637,33 @@ public final class MCPServer {
 
     private static func loadInstructions() -> String {
         let execURL = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath()
-        let candidates = [
+
+        // Prefer GHOST-MCP.md (MCP-specific instructions), fall back to GHOST.md
+        let fileNames = ["GHOST-MCP.md", "GHOST.md"]
+        var candidates: [URL] = []
+        for name in fileNames {
             // Development: .build/debug/ghost → 3 levels up to repo root
-            execURL.deletingLastPathComponent()
-                .deletingLastPathComponent()
-                .deletingLastPathComponent()
-                .appendingPathComponent("GHOST.md"),
+            candidates.append(
+                execURL.deletingLastPathComponent()
+                    .deletingLastPathComponent()
+                    .deletingLastPathComponent()
+                    .appendingPathComponent(name))
             // Development: .build/arm64-apple-macosx/debug/ghost → 4 levels up
-            execURL.deletingLastPathComponent()
-                .deletingLastPathComponent()
-                .deletingLastPathComponent()
-                .deletingLastPathComponent()
-                .appendingPathComponent("GHOST.md"),
+            candidates.append(
+                execURL.deletingLastPathComponent()
+                    .deletingLastPathComponent()
+                    .deletingLastPathComponent()
+                    .deletingLastPathComponent()
+                    .appendingPathComponent(name))
             // Next to executable (installed)
-            execURL.deletingLastPathComponent()
-                .appendingPathComponent("GHOST.md"),
+            candidates.append(
+                execURL.deletingLastPathComponent()
+                    .appendingPathComponent(name))
             // User config
-            FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent(".ghost-os/GHOST.md"),
-        ]
+            candidates.append(
+                FileManager.default.homeDirectoryForCurrentUser
+                    .appendingPathComponent(".ghost-os/\(name)"))
+        }
 
         for url in candidates {
             if let content = try? String(contentsOf: url, encoding: .utf8) {
@@ -838,7 +837,7 @@ public final class MCPServer {
             [
                 "name": "ghost_click",
                 "description":
-                    "Click a UI element by label or at coordinates. Tries AX-native click first, falls back to synthetic. Returns post-action context. Focus the target app first with ghost_focus.",
+                    "Click a UI element by label or at coordinates. Tries AX-native click first (works from background), falls back to synthetic (auto-focuses). Always include app parameter. Returns post-action context.",
                 "inputSchema": [
                     "type": "object",
                     "properties": [
@@ -877,7 +876,7 @@ public final class MCPServer {
             [
                 "name": "ghost_type",
                 "description":
-                    "Type text into the focused element or a specific field. Tries AX-native setValue first (instant), falls back to character-by-character. Returns post-action context.",
+                    "Type text into the focused element or a specific field. Tries AX-native setValue first (instant, works from background), falls back to character-by-character (auto-focuses). Always include app parameter. Returns post-action context.",
                 "inputSchema": [
                     "type": "object",
                     "properties": [
@@ -901,14 +900,18 @@ public final class MCPServer {
             [
                 "name": "ghost_press",
                 "description":
-                    "Press a single key: return, tab, escape, space, delete, up, down, left, right, f1-f12.",
+                    "Press a single key. Sends to the frontmost app — ALWAYS include app to auto-focus the target app first. Keys: return, tab, escape, space, delete, up, down, left, right, f1-f12.",
                 "inputSchema": [
                     "type": "object",
                     "properties": [
                         "key": [
                             "type": "string",
                             "description": "Key name: return, tab, escape, space, delete, up, down, left, right",
-                        ]
+                        ],
+                        "app": [
+                            "type": "string",
+                            "description": "IMPORTANT: App to send key to (auto-focuses before pressing)",
+                        ],
                     ],
                     "required": ["key"],
                 ] as [String: Any],
@@ -916,7 +919,7 @@ public final class MCPServer {
             [
                 "name": "ghost_hotkey",
                 "description":
-                    "Press a key combination. Modifier keys auto-cleared afterward (no stuck keys). Examples: cmd,s (save), cmd,l (address bar), cmd,return (send in Gmail).",
+                    "Press a key combination. Sends to the frontmost app — ALWAYS include app to auto-focus the target app first. Modifier keys auto-cleared afterward (no stuck keys). Examples: cmd,s (save), cmd,l (address bar), cmd,return (send in Gmail).",
                 "inputSchema": [
                     "type": "object",
                     "properties": [
@@ -924,7 +927,11 @@ public final class MCPServer {
                             "type": "string",
                             "description":
                                 "Comma-separated combo: cmd,s or cmd,shift,n or cmd,return",
-                        ]
+                        ],
+                        "app": [
+                            "type": "string",
+                            "description": "IMPORTANT: App to send hotkey to (auto-focuses before pressing)",
+                        ],
                     ],
                     "required": ["keys"],
                 ] as [String: Any],
@@ -932,7 +939,7 @@ public final class MCPServer {
             [
                 "name": "ghost_scroll",
                 "description":
-                    "Scroll in a direction at the current mouse position or at specific coordinates.",
+                    "Scroll in a direction. Sends to the frontmost app — include app to auto-focus the target app first.",
                 "inputSchema": [
                     "type": "object",
                     "properties": [
@@ -944,6 +951,10 @@ public final class MCPServer {
                         "amount": [
                             "type": "number",
                             "description": "Lines to scroll (default: 3)",
+                        ],
+                        "app": [
+                            "type": "string",
+                            "description": "App to scroll in (auto-focuses before scrolling)",
                         ],
                         "x": [
                             "type": "number",
@@ -959,7 +970,7 @@ public final class MCPServer {
             [
                 "name": "ghost_focus",
                 "description":
-                    "Bring an app to the foreground. You MUST focus an app before clicking or typing in it — all input goes to the frontmost app.",
+                    "Bring an app to the foreground. Smart actions (click, type) handle focus automatically via the app parameter. Use ghost_focus when you need explicit focus control, like before a sequence of press/hotkey calls to the same app.",
                 "inputSchema": [
                     "type": "object",
                     "properties": [
