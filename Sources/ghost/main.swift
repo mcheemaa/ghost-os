@@ -1,5 +1,6 @@
 // main.swift — Ghost OS CLI tool
 // Usage:
+//   ghost setup                  Interactive setup (permissions + MCP)
 //   ghost daemon start          Start the daemon (foreground)
 //   ghost daemon status         Check if daemon is running
 //   ghost state                 Print full screen state (JSON)
@@ -84,8 +85,12 @@ func main() async {
         await handleContext(subArgs)
     case "describe":
         await handleDescribe(subArgs)
+    case "setup":
+        await handleSetup()
     case "permissions":
         await handlePermissions()
+    case "version", "--version", "-v":
+        printVersion()
     case "help", "--help", "-h":
         printUsage()
     default:
@@ -1085,6 +1090,12 @@ func handleDescribe(_ args: [String]) async {
 }
 
 @MainActor
+func handleSetup() async {
+    let wizard = SetupWizard()
+    await wizard.run()
+}
+
+@MainActor
 func handlePermissions() async {
     let daemon = GhostDaemon()
     if daemon.checkPermissions() {
@@ -1250,11 +1261,16 @@ func printRecipeList(_ recipes: [RecipeSummary]) {
     }
 }
 
+func printVersion() {
+    print("Ghost OS 0.1.0")
+}
+
 func printUsage() {
     print("""
-    Ghost OS CLI — Accessibility-first computer perception
+    Ghost OS — Give your AI agent eyes and hands on macOS
 
     USAGE:
+      ghost setup                 Interactive setup (permissions + MCP config)
       ghost mcp                   Start MCP server (for Claude Desktop / Claude Code)
       ghost daemon start          Start the daemon (foreground)
       ghost daemon stop           Stop the running daemon
@@ -1308,6 +1324,7 @@ func printUsage() {
       ghost describe              Natural language screen description
       ghost describe --app <name> Include element tree for specific app
       ghost permissions           Check accessibility permissions
+      ghost version               Show version
 
     EXAMPLES:
       ghost state --summary
