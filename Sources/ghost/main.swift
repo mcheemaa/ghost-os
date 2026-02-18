@@ -522,24 +522,28 @@ func handleWait(_ args: [String]) async {
 
 @MainActor
 func handleScreenshot(_ args: [String]) async {
-    // ghost screenshot --app Chrome [--output /path/to/file.png] [--base64]
+    // ghost screenshot [--app Chrome] [--output /path/to/file.png] [--base64] [--full]
     let appName = flagValue(args, flag: "--app")
     let outputPath = flagValue(args, flag: "--output")
     let printBase64 = args.contains("--base64")
+    let fullResolution = args.contains("--full")
     let windowTitle = flagValue(args, flag: "--window")
 
-    guard let appName = appName else {
+    if args.contains("--help") || args.contains("-h") {
         print("""
-        Usage: ghost screenshot --app <name> [options]
+        Usage: ghost screenshot [options]
 
         Options:
-          --app <name>         App to screenshot (required)
+          --app <name>         App to screenshot (default: frontmost app)
           --window <title>     Match specific window title
           --output <path>      Save PNG to file (default: /tmp/ghost-screenshot.png)
           --base64             Print base64-encoded PNG to stdout
+          --full               Capture at native resolution (skip 1280px resize)
 
         Examples:
+          ghost screenshot                             # frontmost app
           ghost screenshot --app Chrome
+          ghost screenshot --app Chrome --full          # native resolution
           ghost screenshot --app Chrome --output ~/Desktop/debug.png
           ghost screenshot --app Chrome --base64
         """)
@@ -549,7 +553,7 @@ func handleScreenshot(_ args: [String]) async {
     // Try daemon first
     if let response = trySendToDaemon(
         method: "screenshot",
-        params: RPCParams(target: windowTitle, app: appName)
+        params: RPCParams(target: windowTitle, app: appName, fullResolution: fullResolution ? true : nil)
     ) {
         if let error = response.error {
             print("Error: \(error.message)")
@@ -563,24 +567,37 @@ func handleScreenshot(_ args: [String]) async {
         return
     }
 
-    // Direct mode
-    let daemon = directDaemon()
-
-    // Check if app exists before trying screenshot
-    let state = daemon.getState()
-    guard state.apps.contains(where: { $0.name.localizedCaseInsensitiveContains(appName) }) else {
-        print("Error: App '\(appName)' not found")
-        let appNames = state.apps.map(\.name).joined(separator: ", ")
-        print("Running apps: \(appNames)")
+    // Direct mode — check permission first
+    guard ScreenCapture.hasPermission() else {
+        print("Error: Screen Recording permission not granted.")
+        print("Go to: System Settings > Privacy & Security > Screen Recording")
+        print("Add your terminal app (Terminal, iTerm2, etc.) to the list.")
         exit(1)
     }
 
-    guard let result = await daemon.screenshot(app: appName, windowTitle: windowTitle) else {
-        print("Screenshot failed.")
-        print("Possible causes:")
-        print("  - Screen Recording permission not granted")
-        print("  - No visible window for this app")
-        print("Check: System Settings > Privacy & Security > Screen Recording")
+    let daemon = directDaemon()
+    let state = daemon.getState()
+
+    // Resolve app — default to frontmost
+    let resolvedAppName: String
+    if let appName = appName {
+        guard state.apps.contains(where: { $0.name.localizedCaseInsensitiveContains(appName) }) else {
+            print("Error: App '\(appName)' not found")
+            let appNames = state.apps.map(\.name).joined(separator: ", ")
+            print("Running apps: \(appNames)")
+            exit(1)
+        }
+        resolvedAppName = appName
+    } else {
+        guard let front = state.frontmostApp else {
+            print("Error: No frontmost app found")
+            exit(1)
+        }
+        resolvedAppName = front.name
+    }
+
+    guard let result = await daemon.screenshot(app: resolvedAppName, windowTitle: windowTitle, fullResolution: fullResolution) else {
+        print("Screenshot failed — no matching window found for '\(resolvedAppName)'.")
         exit(1)
     }
     outputScreenshot(result, outputPath: outputPath, printBase64: printBase64)

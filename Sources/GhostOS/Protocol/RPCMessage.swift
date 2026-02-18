@@ -35,6 +35,8 @@ public struct RPCParams: Codable, Sendable {
     public let value: String?       // Value to match against
     public let timeout: Double?     // Max seconds to wait
     public let interval: Double?    // Poll interval in seconds
+    // Screenshot parameters
+    public let fullResolution: Bool?  // Skip 1280px resize, capture at native resolution
 
     public init(
         query: String? = nil,
@@ -53,7 +55,8 @@ public struct RPCParams: Codable, Sendable {
         condition: String? = nil,
         value: String? = nil,
         timeout: Double? = nil,
-        interval: Double? = nil
+        interval: Double? = nil,
+        fullResolution: Bool? = nil
     ) {
         self.query = query
         self.role = role
@@ -72,6 +75,7 @@ public struct RPCParams: Codable, Sendable {
         self.value = value
         self.timeout = timeout
         self.interval = interval
+        self.fullResolution = fullResolution
     }
 }
 

@@ -213,12 +213,14 @@ public struct ActionResult: Codable, Sendable {
     public let description: String    // "Pressed 'Compose' via AX-native"
     public let method: String         // "ax-native", "synthetic", "setValue", "typeText", "none"
     public let context: ContextInfo?  // post-action situational awareness
+    public let screenshot: ScreenshotResult?  // optional visual capture (e.g. on failure for debugging)
 
-    public init(success: Bool, description: String, method: String, context: ContextInfo?) {
+    public init(success: Bool, description: String, method: String, context: ContextInfo?, screenshot: ScreenshotResult? = nil) {
         self.success = success
         self.description = description
         self.method = method
         self.context = context
+        self.screenshot = screenshot
     }
 }
 

@@ -334,18 +334,35 @@ public final class RPCHandler {
     }
 
     private func handleScreenshot(params: RPCParams?, id: Int) -> RPCResponse {
-        guard let appName = params?.app else {
-            return .failure(.invalidParams("'app' required for screenshot"), id: id)
+        // Permission check first — fail fast with actionable message
+        guard ScreenCapture.hasPermission() else {
+            return .failure(.internalError(
+                "Screen Recording permission not granted. Go to: System Settings > Privacy & Security > Screen Recording and add your terminal app."
+            ), id: id)
         }
+
+        // Resolve app — default to frontmost if --app not specified
         stateManager.refresh()
-        guard let appInfo = stateManager.getState().apps.first(where: {
-            $0.name.localizedCaseInsensitiveContains(appName)
-        }) else {
-            return .failure(.notFound("App '\(appName)' not found"), id: id)
+        let state = stateManager.getState()
+
+        let appInfo: AppInfo
+        if let appName = params?.app {
+            guard let found = state.apps.first(where: {
+                $0.name.localizedCaseInsensitiveContains(appName)
+            }) else {
+                return .failure(.notFound("App '\(appName)' not found"), id: id)
+            }
+            appInfo = found
+        } else {
+            guard let front = state.frontmostApp else {
+                return .failure(.notFound("No frontmost app found"), id: id)
+            }
+            appInfo = front
         }
 
         let pid = appInfo.pid
         let windowTitle = params?.target
+        let fullRes = params?.fullResolution ?? false
 
         // Bridge async ScreenCaptureKit to sync RPC dispatch.
         // We're on MainActor — spin the RunLoop to allow the async Task to make progress.
@@ -355,7 +372,7 @@ public final class RPCHandler {
 
         Task {
             screenshotResult = await ScreenCapture.captureWindow(
-                pid: pid, windowTitle: windowTitle
+                pid: pid, windowTitle: windowTitle, fullResolution: fullRes
             )
             completed = true
         }
@@ -366,7 +383,7 @@ public final class RPCHandler {
 
         guard let screenshot = screenshotResult else {
             return .failure(.internalError(
-                "Screenshot failed (check Screen Recording permission in System Settings > Privacy & Security > Screen Recording)"
+                "Screenshot capture failed — no matching window found for \(appInfo.name)"
             ), id: id)
         }
         return .success(.screenshot(screenshot), id: id)
