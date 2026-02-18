@@ -855,6 +855,9 @@ public final class StateManager {
 
     /// Find a live Element by fuzzy matching — searches content tree first, falls back to full tree.
     /// Returns the AXUIElement handle for AX-native actions (performAction, setValue, etc.).
+    ///
+    /// Uses semantic depth: empty layout containers (AXGroup wrappers from CSS divs) are
+    /// tunneled through at zero cost, so buttons at DOM level 30+ are reachable.
     public func findLiveElement(query: String, role: String? = nil, appName: String? = nil) -> Element? {
         guard let appInfo = resolveApp(appName) else { return nil }
 
@@ -867,14 +870,16 @@ public final class StateManager {
         }
 
         let queryLower = query.lowercased().trimmingCharacters(in: .whitespaces)
+        let deadline = Date().addingTimeInterval(2.0) // 2-second time budget
 
         // Strategy 1: Search content root first (in-page elements like buttons, text fields)
         if let contentRoot = findContentRoot(pid: appInfo.pid) {
-            var visited = Set<UInt>()
-            if let found = searchLiveTree(
+            var ctx = LiveSearchContext(visited: [], deadline: deadline)
+            searchLiveTree(
                 contentRoot, queryLower: queryLower, role: normalizedRole,
-                maxDepth: 15, depth: 0, visited: &visited
-            ) {
+                semanticDepth: 0, domDepth: 0, context: &ctx
+            )
+            if let found = ctx.bestMatch?.element {
                 return found
             }
         }
@@ -882,35 +887,60 @@ public final class StateManager {
         // Strategy 2: Fall back to full app tree (menus, toolbar, etc.)
         let axApp = AXUIElementCreateApplication(appInfo.pid)
         let appElement = Element(axApp)
-        var visited = Set<UInt>()
-        return searchLiveTree(
+        var ctx = LiveSearchContext(visited: [], deadline: deadline)
+        searchLiveTree(
             appElement, queryLower: queryLower, role: normalizedRole,
-            maxDepth: 8, depth: 0, visited: &visited
+            semanticDepth: 0, domDepth: 0, context: &ctx
         )
+        return ctx.bestMatch?.element
     }
 
-    /// Walk a live Element tree with fuzzy matching. Returns the best match above threshold.
-    /// Scoring mirrors SmartResolver: exact > prefix > contains > word match.
+    /// Mutable context for live tree search.
+    private struct LiveSearchContext {
+        var visited: Set<UInt>
+        let deadline: Date
+        var bestMatch: (element: Element, score: Int)? = nil
+        /// Semantic depth budget — only meaningful nodes cost a point.
+        let semanticBudget: Int = 25
+        /// Hard DOM depth cap — prevents pathological nesting from hanging.
+        let domCap: Int = 50
+
+        var shouldStop: Bool { Date() > deadline }
+    }
+
+    /// Walk a live Element tree with fuzzy matching and semantic depth.
+    /// Empty layout containers (AXGroup, AXSection, etc. with no title/desc) are
+    /// tunneled through at zero semantic cost, letting us reach buttons at DOM level 30+.
+    /// Returns the best match above threshold via context.bestMatch.
     private func searchLiveTree(
         _ element: Element,
         queryLower: String,
         role: String?,
-        maxDepth: Int,
-        depth: Int,
-        visited: inout Set<UInt>,
-        bestMatch: inout (element: Element, score: Int)?
+        semanticDepth: Int,
+        domDepth: Int,
+        context: inout LiveSearchContext
     ) {
-        if depth > maxDepth { return }
+        if context.shouldStop { return }
+        if semanticDepth > context.semanticBudget { return }
+        if domDepth > context.domCap { return }
 
         // Cycle detection
         let hash = CFHash(element.underlyingElement)
-        guard !visited.contains(hash) else { return }
-        visited.insert(hash)
+        guard !context.visited.contains(hash) else { return }
+        context.visited.insert(hash)
 
         let elementRole = element.role() ?? ""
 
         // Skip menus
         if Self.skipRoles.contains(elementRole) { return }
+
+        // Read title and desc once — used for both scoring AND tunnel detection
+        let title = element.title() ?? ""
+        let desc = element.descriptionText() ?? ""
+
+        // Determine if this is an empty layout container (tunnel through at zero semantic cost)
+        let isTunnel = Self.layoutRoles.contains(elementRole)
+            && title.isEmpty && desc.isEmpty
 
         // Check role filter
         let roleMatches: Bool
@@ -920,18 +950,28 @@ public final class StateManager {
             roleMatches = true
         }
 
-        // Score this element
+        // Score this element (reuse title/desc already read above)
         if roleMatches || role == nil {
-            let title = element.title() ?? ""
-            let desc = element.descriptionText() ?? ""
             let titleLower = title.lowercased()
             let descLower = desc.lowercased()
+
+            // Also check AXValue directly for Chrome AXStaticText (same fix as extractContent)
+            var valueLower = ""
+            if titleLower.isEmpty && descLower.isEmpty {
+                var rawVal: CFTypeRef?
+                if AXUIElementCopyAttributeValue(element.underlyingElement, kAXValueAttribute as CFString, &rawVal) == .success,
+                   let str = rawVal as? String, !str.isEmpty {
+                    valueLower = str.lowercased()
+                }
+            }
 
             var score = 0
             // Exact match
             if !titleLower.isEmpty && titleLower == queryLower {
                 score = 100
             } else if !descLower.isEmpty && descLower == queryLower {
+                score = 100
+            } else if !valueLower.isEmpty && valueLower == queryLower {
                 score = 100
             }
             // Trimmed match
@@ -943,11 +983,15 @@ public final class StateManager {
                 score = 80
             } else if !descLower.isEmpty && descLower.hasPrefix(queryLower) {
                 score = 80
+            } else if !valueLower.isEmpty && valueLower.hasPrefix(queryLower) {
+                score = 80
             }
             // Contains
             else if !titleLower.isEmpty && titleLower.contains(queryLower) {
                 score = 60
             } else if !descLower.isEmpty && descLower.contains(queryLower) {
+                score = 60
+            } else if !valueLower.isEmpty && valueLower.contains(queryLower) {
                 score = 60
             }
 
@@ -968,40 +1012,26 @@ public final class StateManager {
             }
 
             if score >= 50 {
-                if bestMatch == nil || score > bestMatch!.score {
-                    bestMatch = (element, score)
+                if context.bestMatch == nil || score > context.bestMatch!.score {
+                    context.bestMatch = (element, score)
                 }
             }
         }
 
         // Recurse into children
+        // Semantic depth: empty layout containers cost 0, everything else costs 1
+        let childSemanticDepth = isTunnel ? semanticDepth : semanticDepth + 1
         guard let children = element.children() else { return }
         for child in children.prefix(100) {
+            if context.shouldStop { return }
             searchLiveTree(
                 child, queryLower: queryLower, role: role,
-                maxDepth: maxDepth, depth: depth + 1,
-                visited: &visited, bestMatch: &bestMatch
+                semanticDepth: childSemanticDepth, domDepth: domDepth + 1,
+                context: &context
             )
         }
     }
 
-    /// Convenience wrapper that initializes bestMatch and returns the result
-    private func searchLiveTree(
-        _ root: Element,
-        queryLower: String,
-        role: String?,
-        maxDepth: Int,
-        depth: Int,
-        visited: inout Set<UInt>
-    ) -> Element? {
-        var bestMatch: (element: Element, score: Int)? = nil
-        searchLiveTree(
-            root, queryLower: queryLower, role: role,
-            maxDepth: maxDepth, depth: depth,
-            visited: &visited, bestMatch: &bestMatch
-        )
-        return bestMatch?.element
-    }
 
     // MARK: - Element Search
 
