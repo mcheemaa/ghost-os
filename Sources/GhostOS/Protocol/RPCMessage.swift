@@ -30,6 +30,11 @@ public struct RPCParams: Codable, Sendable {
     public let amount: Double?
     public let action: String?
     public let depth: Int?
+    // Wait parameters
+    public let condition: String?   // "urlContains", "titleContains", "elementExists", etc.
+    public let value: String?       // Value to match against
+    public let timeout: Double?     // Max seconds to wait
+    public let interval: Double?    // Poll interval in seconds
 
     public init(
         query: String? = nil,
@@ -44,7 +49,11 @@ public struct RPCParams: Codable, Sendable {
         direction: String? = nil,
         amount: Double? = nil,
         action: String? = nil,
-        depth: Int? = nil
+        depth: Int? = nil,
+        condition: String? = nil,
+        value: String? = nil,
+        timeout: Double? = nil,
+        interval: Double? = nil
     ) {
         self.query = query
         self.role = role
@@ -59,6 +68,10 @@ public struct RPCParams: Codable, Sendable {
         self.amount = amount
         self.action = action
         self.depth = depth
+        self.condition = condition
+        self.value = value
+        self.timeout = timeout
+        self.interval = interval
     }
 }
 

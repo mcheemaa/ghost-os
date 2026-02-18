@@ -276,6 +276,11 @@ public final class GhostDaemon {
         return actionExecutor.hotkeyWithContext(keys: keys, appName: app)
     }
 
+    /// Wait for a condition to be met
+    public func wait(condition: String, value: String?, timeout: Double = 10.0, interval: Double = 0.5, app: String? = nil) -> ActionResult {
+        return actionExecutor.wait(condition: condition, value: value, timeout: timeout, interval: interval, appName: app)
+    }
+
     /// Check accessibility permissions
     public func checkPermissions() -> Bool {
         let status = getPermissionsStatus()

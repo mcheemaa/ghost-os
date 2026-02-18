@@ -56,6 +56,8 @@ func main() async {
         await handleHotkey(subArgs)
     case "focus":
         await handleFocus(subArgs)
+    case "wait":
+        await handleWait(subArgs)
     case "scroll":
         await handleScroll(subArgs)
     case "diff":
@@ -442,6 +444,66 @@ func handleScroll(_ args: [String]) async {
 }
 
 @MainActor
+func handleWait(_ args: [String]) async {
+    // ghost wait urlContains "amazon.com" --timeout 15 --app Chrome
+    // ghost wait elementExists "Add to Cart" --timeout 10
+    // ghost wait titleChanged --timeout 5
+
+    guard let condition = args.first(where: { !$0.hasPrefix("-") }) else {
+        print("""
+        Usage: ghost wait <condition> [value] [--timeout n] [--interval n] [--app name]
+
+        Conditions:
+          urlContains <text>     Wait until URL contains text
+          titleContains <text>   Wait until window title contains text
+          elementExists <text>   Wait until element with text appears
+          elementGone <text>     Wait until element with text disappears
+          urlChanged             Wait until URL changes from current
+          titleChanged           Wait until window title changes
+        """)
+        return
+    }
+
+    let appName = flagValue(args, flag: "--app")
+    let timeoutStr = flagValue(args, flag: "--timeout")
+    let intervalStr = flagValue(args, flag: "--interval")
+    let timeout = timeoutStr.flatMap(Double.init) ?? 10.0
+    let interval = intervalStr.flatMap(Double.init) ?? 0.5
+
+    // Value is the second non-flag argument (if present)
+    let flagKeys: Set<String> = ["--app", "--timeout", "--interval"]
+    let flagVals: Set<String> = Set(flagKeys.compactMap { flagValue(args, flag: $0) })
+    let nonFlags = args.filter { !$0.hasPrefix("-") && !flagVals.contains($0) }
+    let value = nonFlags.count > 1 ? nonFlags[1] : nil
+
+    // Try daemon first
+    if let response = trySendToDaemon(
+        method: "wait",
+        params: RPCParams(
+            app: appName,
+            condition: condition,
+            value: value,
+            timeout: timeout,
+            interval: interval
+        )
+    ) {
+        printResult(response)
+        return
+    }
+
+    // Direct mode
+    let daemon = directDaemon()
+    let result = daemon.wait(
+        condition: condition,
+        value: value,
+        timeout: timeout,
+        interval: interval,
+        app: appName
+    )
+    printActionResult(result)
+}
+
+@MainActor
 func handleFocus(_ args: [String]) async {
     guard let appName = args.first else {
         print("Usage: ghost focus <app name>")
@@ -782,6 +844,10 @@ func printUsage() {
       ghost type <text> --into <field>  Find field first, then type
       ghost press <key>           Press key (return, tab, escape, etc.)
       ghost hotkey <keys>         Key combo (cmd,s  cmd,shift,t)
+      ghost wait <condition> [value]  Wait for condition (replaces sleep)
+        Conditions: urlContains, titleContains, elementExists,
+                    elementGone, urlChanged, titleChanged
+        Options: --timeout <s> (default 10) --interval <s> (default 0.5)
       ghost scroll [up|down]      Scroll (default: down)
       ghost focus <app>           Bring app to foreground
       ghost diff                  Show what changed since last state check
@@ -802,6 +868,9 @@ func printUsage() {
       ghost type "Hello world"
       ghost type "test" --into "Search" --app Chrome
       ghost hotkey cmd,shift,n
+      ghost wait urlContains "amazon.com" --timeout 15 --app Chrome
+      ghost wait elementExists "Add to Cart" --timeout 10 --app Chrome
+      ghost wait titleChanged --timeout 5 --app Chrome
       ghost watch --interval 2
       ghost describe --app "System Settings"
 

@@ -76,6 +76,8 @@ public final class RPCHandler {
             return handleDescribe(params: params, id: id)
         case "refresh":
             return handleRefresh(id: id)
+        case "wait":
+            return handleWait(params: params, id: id)
         case "ping":
             return .success(.message("pong"), id: id)
         default:
@@ -293,5 +295,19 @@ public final class RPCHandler {
     private func handleRefresh(id: Int) -> RPCResponse {
         stateManager.refresh()
         return .success(.message("State refreshed"), id: id)
+    }
+
+    private func handleWait(params: RPCParams?, id: Int) -> RPCResponse {
+        guard let condition = params?.condition else {
+            return .failure(.invalidParams("'condition' required (urlContains, titleContains, elementExists, elementGone, urlChanged, titleChanged)"), id: id)
+        }
+        let result = actionExecutor.wait(
+            condition: condition,
+            value: params?.value,
+            timeout: params?.timeout ?? 10.0,
+            interval: params?.interval ?? 0.5,
+            appName: params?.app
+        )
+        return .success(.actionResult(result), id: id)
     }
 }

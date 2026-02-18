@@ -268,6 +268,105 @@ public final class ActionExecutor {
         }
     }
 
+    // MARK: - Wait (Condition Polling)
+
+    /// Wait until a condition is met, polling getContext and/or readContent.
+    /// Returns ActionResult with the final context (whether success or timeout).
+    ///
+    /// Conditions:
+    ///   - urlContains: ctx.url contains value
+    ///   - titleContains: ctx.window contains value
+    ///   - elementExists: findLiveElement or readContent finds value
+    ///   - elementGone: readContent does NOT contain value
+    ///   - urlChanged: ctx.url differs from initial
+    ///   - titleChanged: ctx.window differs from initial
+    public func wait(
+        condition: String,
+        value: String?,
+        timeout: Double = 10.0,
+        interval: Double = 0.5,
+        appName: String? = nil
+    ) -> ActionResult {
+        let deadline = Date().addingTimeInterval(timeout)
+        let intervalUs = UInt32(interval * 1_000_000)
+
+        // Capture initial state for "changed" conditions
+        stateManager.refresh()
+        let initialContext = stateManager.getContext(appName: appName)
+        let initialUrl = initialContext?.url
+        let initialTitle = initialContext?.window
+
+        while Date() < deadline {
+            stateManager.refresh()
+            let ctx = stateManager.getContext(appName: appName)
+
+            let met: Bool
+            switch condition {
+            case "urlContains":
+                met = value != nil && (ctx?.url?.localizedCaseInsensitiveContains(value!) == true)
+
+            case "titleContains":
+                met = value != nil && (ctx?.window?.localizedCaseInsensitiveContains(value!) == true)
+
+            case "elementExists":
+                if let v = value {
+                    // Try live element search first (fast), fall back to content scan
+                    if stateManager.findLiveElement(query: v, appName: appName) != nil {
+                        met = true
+                    } else {
+                        let items = stateManager.readContent(appName: appName, maxItems: 200)
+                        met = items.contains { $0.text.localizedCaseInsensitiveContains(v) }
+                    }
+                } else {
+                    met = false
+                }
+
+            case "elementGone":
+                if let v = value {
+                    let items = stateManager.readContent(appName: appName, maxItems: 200)
+                    met = !items.contains { $0.text.localizedCaseInsensitiveContains(v) }
+                } else {
+                    met = true
+                }
+
+            case "urlChanged":
+                met = ctx?.url != nil && ctx?.url != initialUrl
+
+            case "titleChanged":
+                met = ctx?.window != nil && ctx?.window != initialTitle
+
+            default:
+                return ActionResult(
+                    success: false,
+                    description: "Unknown condition: '\(condition)'. Valid: urlContains, titleContains, elementExists, elementGone, urlChanged, titleChanged",
+                    method: "wait",
+                    context: ctx
+                )
+            }
+
+            if met {
+                return ActionResult(
+                    success: true,
+                    description: "Condition '\(condition)' met\(value.map { " (value: \($0))" } ?? "")",
+                    method: "wait",
+                    context: ctx
+                )
+            }
+
+            usleep(intervalUs)
+        }
+
+        // Timeout
+        stateManager.refresh()
+        let finalCtx = stateManager.getContext(appName: appName)
+        return ActionResult(
+            success: false,
+            description: "Timeout after \(timeout)s waiting for '\(condition)'\(value.map { " (value: \($0))" } ?? "")",
+            method: "wait",
+            context: finalCtx
+        )
+    }
+
     // MARK: - Backward-compatible methods (still used by some paths)
 
     /// Click at specific coordinates (synthetic only, no AX-native equivalent)
